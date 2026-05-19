@@ -134,13 +134,27 @@ else
     wds_start_network
 
     # If the modem retained a stale PDP context (USB power not cut on reboot),
-    # reset the radio and retry once
+    # do a soft modem reset via AT+CFUN=1,1 and retry once.
+    # --dms-set-operating-mode=offline drops the QMI endpoint entirely and requires
+    # a physical power cycle to recover — AT+CFUN=1,1 is a clean soft reset.
     if echo "$WDS_OUTPUT" | grep -q "interface-in-use"; then
-        LOG "Stale PDP context detected — resetting modem radio and retrying..."
-        qmicli -d /dev/cdc-wdm0 --dms-set-operating-mode=offline 2>/dev/null || true
+        LOG "Stale PDP context detected — soft-resetting modem via AT+CFUN=1,1..."
+        systemctl stop ModemManager 2>/dev/null || true
+        sleep 1
+        for port in ttyUSB2 ttyUSB3 ttyUSB1 ttyUSB0; do
+            [[ -e "/dev/$port" ]] || continue
+            setsid bash -c "
+                exec 3<>/dev/$port 2>/dev/null || exit 1
+                printf 'AT+CFUN=1,1\r' >&3
+                sleep 2
+            " 2>/dev/null && LOG "AT+CFUN=1,1 sent via /dev/$port" && break || true
+        done
+        LOG "Waiting for modem to recover (up to 60s)..."
+        for i in $(seq 1 30); do
+            qmicli -d /dev/cdc-wdm0 --dms-get-operating-mode &>/dev/null && break
+            sleep 2
+        done
         sleep 3
-        qmicli -d /dev/cdc-wdm0 --dms-set-operating-mode=online 2>/dev/null || true
-        sleep 10
         rm -f "$WDS_STATE"
         wds_start_network
     fi
