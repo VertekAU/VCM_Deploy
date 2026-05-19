@@ -5,7 +5,7 @@ LOG() { echo "[vcm-modem-reconnect $(date -Is)] $*"; }
 
 MARKER="/var/lib/vcm/migration_qmi_done"
 
-# Run one-time Sixfab migration if needed
+# --- Path 1: Sixfab migration (fleet devices with Sixfab agent still present) ---
 if [[ ! -f "$MARKER" ]] && [[ -d /opt/sixfab ]]; then
     LOG "Sixfab detected, migration not done — running migration"
     if [[ ! -x /usr/local/sbin/vcm_modem_migrate.sh ]]; then
@@ -15,21 +15,60 @@ if [[ ! -f "$MARKER" ]] && [[ -d /opt/sixfab ]]; then
     /usr/local/sbin/vcm_modem_migrate.sh || { LOG "Migration failed"; exit 1; }
 fi
 
-# Wait for QMI device node (up to 30s)
+# --- Path 2: ECM→QMI flip (fresh device, Quectel modem in ECM, no cdc-wdm0 yet) ---
+if lsusb 2>/dev/null | grep -q "2c7c" && [[ ! -e /dev/cdc-wdm0 ]]; then
+    LOG "Quectel modem detected in ECM mode (no cdc-wdm0) — flipping to QMI..."
+
+    # Release ttyUSB ports from ModemManager if active
+    if systemctl is-active --quiet ModemManager 2>/dev/null; then
+        LOG "Stopping ModemManager to release ttyUSB ports..."
+        systemctl stop ModemManager 2>/dev/null || true
+        sleep 1
+    fi
+
+    # Send AT+QCFG="usbnet",0 then AT+CFUN=1,1 (modem self-reboots to apply)
+    FLIPPED=0
+    for port in ttyUSB2 ttyUSB3 ttyUSB1 ttyUSB0; do
+        [[ -e "/dev/$port" ]] || continue
+        exec 3<>"/dev/$port" 2>/dev/null || continue
+        printf 'AT+QCFG="usbnet",0\r' >&3
+        sleep 2
+        printf 'AT+CFUN=1,1\r' >&3
+        sleep 1
+        exec 3>&- 2>/dev/null || true
+        LOG "QMI flip commands sent via /dev/$port — modem rebooting"
+        FLIPPED=1
+        break
+    done
+
+    if [[ "$FLIPPED" -eq 0 ]]; then
+        LOG "No ttyUSB port responded — cannot flip modem mode; wlan0 sufficient"
+        exit 0
+    fi
+
+    LOG "Waiting for /dev/cdc-wdm0 after modem reboot (up to 3 min)..."
+    for i in $(seq 1 60); do
+        [[ -e /dev/cdc-wdm0 ]] && { LOG "cdc-wdm0 appeared"; break; }
+        [[ "$i" -eq 60 ]] && { LOG "cdc-wdm0 not found after 3 minutes — wlan0 sufficient"; exit 0; }
+        sleep 3
+    done
+fi
+
+# --- Wait for QMI device node (up to 30s) ---
 for i in $(seq 1 30); do
     [[ -e /dev/cdc-wdm0 ]] && break
     [[ "$i" -eq 30 ]] && { LOG "cdc-wdm0 not found after 30s — wwan0 unavailable, wlan0 sufficient"; exit 0; }
     sleep 1
 done
 
-# Wait for wwan0 interface (up to 30s)
+# --- Wait for wwan0 interface (up to 30s) ---
 for i in $(seq 1 30); do
     ip link show wwan0 &>/dev/null && break
     [[ "$i" -eq 30 ]] && { LOG "wwan0 not found after 30s — skipping LTE setup"; exit 0; }
     sleep 1
 done
 
-# Check for a valid (non-APIPA) IPv4 on wwan0
+# --- Check for a valid (non-APIPA) IPv4 on wwan0 ---
 CURRENT_IP="$(ip -4 addr show wwan0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)"
 HEALTHY=0
 if [[ -n "${CURRENT_IP:-}" ]]; then
@@ -63,7 +102,7 @@ else
     LOG "QMI setup complete, wwan0 IP: $CURRENT_IP"
 fi
 
-# Unconditionally set wwan0 default route metric to 700 so wlan0 remains preferred
+# --- Set wwan0 default route metric to 700 so wlan0 remains preferred ---
 WAN_GW="$(ip route show default dev wwan0 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')"
 if [[ -n "${WAN_GW:-}" ]]; then
     ip route del default dev wwan0 2>/dev/null || true
