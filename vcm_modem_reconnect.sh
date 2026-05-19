@@ -121,13 +121,29 @@ else
     echo 'Y' | tee /sys/class/net/wwan0/qmi/raw_ip >/dev/null
     ip link set wwan0 up
 
+    wds_start_network() {
+        WDS_OUTPUT="$(qmicli -p -d /dev/cdc-wdm0 \
+            --device-open-net='net-raw-ip|net-no-qos-header' \
+            --wds-start-network="apn='super',ip-type=4" \
+            --client-no-release-cid 2>&1)"
+        WDS_CID="$(echo "$WDS_OUTPUT" | sed -n "s/.*CID: '\([0-9]*\)'.*/\1/p")"
+        WDS_PDH="$(echo "$WDS_OUTPUT" | sed -n "s/.*Packet data handle: '\([0-9]*\)'.*/\1/p")"
+    }
+
     LOG "Starting WDS network..."
-    WDS_OUTPUT="$(qmicli -p -d /dev/cdc-wdm0 \
-        --device-open-net='net-raw-ip|net-no-qos-header' \
-        --wds-start-network="apn='super',ip-type=4" \
-        --client-no-release-cid 2>&1)"
-    WDS_CID="$(echo "$WDS_OUTPUT" | awk '/CID:/{print $2}')"
-    WDS_PDH="$(echo "$WDS_OUTPUT" | awk "/Packet data handle/{gsub(/'/,\"\",$NF); print $NF}")"
+    wds_start_network
+
+    # If the modem retained a stale PDP context (USB power not cut on reboot),
+    # reset the radio and retry once
+    if echo "$WDS_OUTPUT" | grep -q "interface-in-use"; then
+        LOG "Stale PDP context detected — resetting modem radio and retrying..."
+        qmicli -d /dev/cdc-wdm0 --dms-set-operating-mode=offline 2>/dev/null || true
+        sleep 3
+        qmicli -d /dev/cdc-wdm0 --dms-set-operating-mode=online 2>/dev/null || true
+        sleep 10
+        rm -f "$WDS_STATE"
+        wds_start_network
+    fi
 
     if [[ -z "${WDS_PDH:-}" ]]; then
         LOG "WDS start-network failed: $WDS_OUTPUT"
@@ -138,7 +154,29 @@ else
     echo "$WDS_CID $WDS_PDH" > "$WDS_STATE"
     LOG "WDS network started (CID $WDS_CID, PDH $WDS_PDH)"
 
-    udhcpc -q -f -n -i wwan0 2>/dev/null || true
+    # Get IP settings from modem directly (more reliable than DHCP over QMI)
+    SETTINGS="$(qmicli -p -d /dev/cdc-wdm0 \
+        --client-cid="$WDS_CID" \
+        --wds-get-current-settings 2>/dev/null)"
+    WDS_IP="$(echo "$SETTINGS"    | sed -n 's/.*IPv4 address: \(.*\)/\1/p' | tr -d ' ')"
+    WDS_MASK="$(echo "$SETTINGS"  | sed -n 's/.*IPv4 subnet mask: \(.*\)/\1/p' | tr -d ' ')"
+    WDS_GW="$(echo "$SETTINGS"    | sed -n 's/.*IPv4 gateway address: \(.*\)/\1/p' | tr -d ' ')"
+    WDS_DNS1="$(echo "$SETTINGS"  | sed -n 's/.*IPv4 primary DNS: \(.*\)/\1/p' | tr -d ' ')"
+    WDS_MTU="$(echo "$SETTINGS"   | sed -n 's/.*MTU: \(.*\)/\1/p' | tr -d ' ')"
+
+    if [[ -n "${WDS_IP:-}" ]]; then
+        LOG "Configuring wwan0 from WDS settings: IP=$WDS_IP GW=$WDS_GW DNS=$WDS_DNS1"
+        # Convert subnet mask to prefix length
+        PREFIX="$(python3 -c "import ipaddress; print(ipaddress.IPv4Network('0.0.0.0/${WDS_MASK}').prefixlen)" 2>/dev/null || echo "30")"
+        ip addr flush dev wwan0 2>/dev/null || true
+        ip addr add "${WDS_IP}/${PREFIX}" dev wwan0
+        [[ -n "${WDS_GW:-}" ]] && ip route add default via "$WDS_GW" dev wwan0 metric 700 2>/dev/null || true
+        [[ -n "${WDS_MTU:-}" ]] && ip link set wwan0 mtu "$WDS_MTU" 2>/dev/null || true
+        [[ -n "${WDS_DNS1:-}" ]] && echo "nameserver $WDS_DNS1" > /etc/resolv.conf
+    else
+        LOG "No IP in WDS settings — falling back to udhcpc..."
+        udhcpc -q -f -n -i wwan0 2>/dev/null || true
+    fi
 
     CURRENT_IP="$(ip -4 addr show wwan0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)"
     if [[ -z "${CURRENT_IP:-}" ]]; then
