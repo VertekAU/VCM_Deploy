@@ -26,25 +26,44 @@ detect_iccid() {
         return 0
     fi
 
-    LOG "Probing modem for ICCID (ttyUSB2, 3, 1, 0)..."
     local iccid=""
-    for port in ttyUSB2 ttyUSB3 ttyUSB1 ttyUSB0; do
-        [[ -e "/dev/$port" ]] || continue
-        local response
-        response="$(
-            exec 3<>"/dev/$port"
-            printf 'AT+CCID\r' >&3
-            sleep 1
-            timeout 2 cat <&3 2>/dev/null || true
-        )" 2>/dev/null || continue
-        iccid="$(echo "$response" | grep '+CCID:' | awk -F': ' '{print $2}' | tr -d '\r\n ')"
-        if [[ -n "${iccid:-}" ]]; then
-            LOG "ICCID detected via /dev/$port: $iccid"
-            break
-        fi
-    done
 
-    [[ -n "${iccid:-}" ]] || FAIL "Could not detect ICCID from any ttyUSB port — check modem hardware"
+    # ModemManager holds ttyUSB port locks when active — query through it first
+    if systemctl is-active --quiet ModemManager 2>/dev/null && command -v mmcli &>/dev/null; then
+        LOG "ModemManager is active — querying ICCID via mmcli..."
+        iccid="$(mmcli -m 0 --timeout=15 --command="AT+CCID" 2>/dev/null \
+            | grep '+CCID:' | awk -F': ' '{print $2}' | tr -d '\r\n ')"
+        [[ -n "${iccid:-}" ]] && LOG "ICCID from ModemManager: $iccid"
+    fi
+
+    # Direct AT probe — stop ModemManager first to release port locks
+    if [[ -z "${iccid:-}" ]]; then
+        LOG "Probing modem directly for ICCID (ttyUSB2, 3, 1, 0)..."
+        if systemctl is-active --quiet ModemManager 2>/dev/null; then
+            LOG "Stopping ModemManager to release port locks..."
+            systemctl stop ModemManager 2>/dev/null || true
+            sleep 1
+        fi
+
+        for port in ttyUSB2 ttyUSB3 ttyUSB1 ttyUSB0; do
+            [[ -e "/dev/$port" ]] || continue
+            local response
+            response="$(
+                exec 3<>"/dev/$port"
+                printf 'AT+CCID\r' >&3
+                sleep 1
+                timeout 2 cat <&3 2>/dev/null || true
+            )" 2>/dev/null || continue
+            iccid="$(echo "$response" | grep '+CCID:' | awk -F': ' '{print $2}' | tr -d '\r\n ')"
+            if [[ -n "${iccid:-}" ]]; then
+                LOG "ICCID detected via /dev/$port: $iccid"
+                break
+            fi
+        done
+        # ModemManager is left stopped — qmicli replaces its function
+    fi
+
+    [[ -n "${iccid:-}" ]] || FAIL "Could not detect ICCID — check modem hardware and connectivity"
 
     if [[ -f "$ICCID_FILE" ]]; then
         local cached
