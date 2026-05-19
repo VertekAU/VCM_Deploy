@@ -8,6 +8,7 @@ trap '' HUP
 LOG() { echo "[vcm-modem-reconnect $(date -Is)] $*"; }
 
 MARKER="/var/lib/vcm/migration_qmi_done"
+WDS_STATE="/var/lib/vcm/wds-state"   # persists CID and PDH across runs
 
 # --- Path 1: Sixfab migration (fleet devices with Sixfab agent still present) ---
 if [[ ! -f "$MARKER" ]] && [[ -d /opt/sixfab ]]; then
@@ -103,15 +104,41 @@ else
     done
     sleep 3
 
+    # Stop any stale WDS session from a previous run (prevents interface-in-use-config-match)
+    if [[ -f "$WDS_STATE" ]]; then
+        read -r STALE_CID STALE_PDH < "$WDS_STATE" 2>/dev/null || true
+        if [[ -n "${STALE_CID:-}" && -n "${STALE_PDH:-}" ]]; then
+            LOG "Stopping stale WDS session (CID $STALE_CID, PDH $STALE_PDH)..."
+            qmicli -p -d /dev/cdc-wdm0 \
+                --client-cid="$STALE_CID" \
+                --wds-stop-network="$STALE_PDH" \
+                --client-no-release-cid 2>/dev/null || true
+        fi
+        rm -f "$WDS_STATE"
+    fi
+
     ip link set wwan0 down
     echo 'Y' | tee /sys/class/net/wwan0/qmi/raw_ip >/dev/null
     ip link set wwan0 up
-    qmicli -d /dev/cdc-wdm0 --wda-get-data-format 2>/dev/null || true
-    qmicli -p -d /dev/cdc-wdm0 \
+
+    LOG "Starting WDS network..."
+    WDS_OUTPUT="$(qmicli -p -d /dev/cdc-wdm0 \
         --device-open-net='net-raw-ip|net-no-qos-header' \
         --wds-start-network="apn='super',ip-type=4" \
-        --client-no-release-cid 2>/dev/null || true
-    udhcpc -q -f -i wwan0 2>/dev/null || true
+        --client-no-release-cid 2>&1)"
+    WDS_CID="$(echo "$WDS_OUTPUT" | awk '/CID:/{print $2}')"
+    WDS_PDH="$(echo "$WDS_OUTPUT" | awk "/Packet data handle/{gsub(/'/,\"\",$NF); print $NF}")"
+
+    if [[ -z "${WDS_PDH:-}" ]]; then
+        LOG "WDS start-network failed: $WDS_OUTPUT"
+        LOG "wwan0 has no bearer — wlan0 sufficient, continuing"
+        exit 0
+    fi
+
+    echo "$WDS_CID $WDS_PDH" > "$WDS_STATE"
+    LOG "WDS network started (CID $WDS_CID, PDH $WDS_PDH)"
+
+    udhcpc -q -f -n -i wwan0 2>/dev/null || true
 
     CURRENT_IP="$(ip -4 addr show wwan0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)"
     if [[ -z "${CURRENT_IP:-}" ]]; then
