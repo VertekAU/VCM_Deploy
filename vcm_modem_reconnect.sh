@@ -102,7 +102,7 @@ else
         [[ "$i" -eq 30 ]] && { LOG "No LTE registration after 60s — wlan0 sufficient, continuing"; exit 0; }
         sleep 2
     done
-    sleep 3
+    sleep 10
 
     # Stop any stale WDS session from a previous run (prevents interface-in-use-config-match)
     if [[ -f "$WDS_STATE" ]]; then
@@ -132,6 +132,14 @@ else
 
     LOG "Starting WDS network..."
     wds_start_network
+
+    # Endpoint hangup: modem briefly unresponsive after LTE network attach completes.
+    # Wait and retry once.
+    if echo "$WDS_OUTPUT" | grep -q "endpoint hangup"; then
+        LOG "Endpoint hangup after LTE attach — waiting 15s for modem to stabilise..."
+        sleep 15
+        wds_start_network
+    fi
 
     # If the modem retained a stale PDP context (USB power not cut on reboot),
     # do a soft modem reset via AT+CFUN=1,1 and retry once.
