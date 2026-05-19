@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# Opening a ttyUSB device as session leader (no controlling terminal) makes it
+# the controlling terminal — HUP arrives if the modem resets. Ignore it here;
+# child sessions opened via setsid handle their own terminal lifecycle.
+trap '' HUP
 
 LOG() { echo "[vcm-modem-reconnect $(date -Is)] $*"; }
 
@@ -26,19 +30,20 @@ if lsusb 2>/dev/null | grep -q "2c7c" && [[ ! -e /dev/cdc-wdm0 ]]; then
         sleep 1
     fi
 
-    # Send AT+QCFG="usbnet",0 then AT+CFUN=1,1 (modem self-reboots to apply)
+    # Send AT+QCFG="usbnet",0 then AT+CFUN=1,1 (modem self-reboots to apply).
+    # Run in setsid so the ttyUSB becomes the controlling terminal of the child
+    # session, not this script — when the modem resets and the device hangs up,
+    # SIGHUP goes to the child, not here.
     FLIPPED=0
     for port in ttyUSB2 ttyUSB3 ttyUSB1 ttyUSB0; do
         [[ -e "/dev/$port" ]] || continue
-        exec 3<>"/dev/$port" 2>/dev/null || continue
-        printf 'AT+QCFG="usbnet",0\r' >&3
-        sleep 2
-        printf 'AT+CFUN=1,1\r' >&3
-        sleep 1
-        exec 3>&- 2>/dev/null || true
-        LOG "QMI flip commands sent via /dev/$port — modem rebooting"
-        FLIPPED=1
-        break
+        setsid bash -c "
+            exec 3<>/dev/$port 2>/dev/null || exit 1
+            printf 'AT+QCFG=\"usbnet\",0\r' >&3
+            sleep 2
+            printf 'AT+CFUN=1,1\r' >&3
+            sleep 1
+        " 2>/dev/null && FLIPPED=1 && LOG "QMI flip commands sent via /dev/$port — modem rebooting" && break || true
     done
 
     if [[ "$FLIPPED" -eq 0 ]]; then
