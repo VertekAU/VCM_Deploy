@@ -89,6 +89,12 @@ if [[ "$HEALTHY" -eq 1 ]]; then
 else
     LOG "wwan0 has no valid IP (current: ${CURRENT_IP:-none}) — running QMI setup"
 
+    # Mask ModemManager so it cannot restart on USB re-enumeration and grab
+    # the QMI device mid-setup — the root cause of endpoint hangup failures.
+    LOG "Masking ModemManager..."
+    systemctl stop ModemManager 2>/dev/null || true
+    systemctl mask ModemManager 2>/dev/null || true
+
     LOG "Waiting for modem hardware ready..."
     for i in $(seq 1 30); do
         qmicli -d /dev/cdc-wdm0 --dms-get-operating-mode &>/dev/null && break
@@ -109,7 +115,7 @@ else
         read -r STALE_CID STALE_PDH < "$WDS_STATE" 2>/dev/null || true
         if [[ -n "${STALE_CID:-}" && -n "${STALE_PDH:-}" ]]; then
             LOG "Stopping stale WDS session (CID $STALE_CID, PDH $STALE_PDH)..."
-            qmicli -p -d /dev/cdc-wdm0 \
+            qmicli -d /dev/cdc-wdm0 \
                 --client-cid="$STALE_CID" \
                 --wds-stop-network="$STALE_PDH" \
                 --client-no-release-cid 2>/dev/null || true
@@ -117,38 +123,28 @@ else
         rm -f "$WDS_STATE"
     fi
 
-    ip link set wwan0 down
-    echo 'Y' | tee /sys/class/net/wwan0/qmi/raw_ip >/dev/null
-    ip link set wwan0 up
+    setup_wwan0() {
+        ip link set wwan0 down
+        echo 'Y' | tee /sys/class/net/wwan0/qmi/raw_ip >/dev/null
+        ip link set wwan0 up
+    }
 
     wds_start_network() {
-        WDS_OUTPUT="$(qmicli -p -d /dev/cdc-wdm0 \
-            --device-open-net='net-raw-ip|net-no-qos-header' \
+        WDS_OUTPUT="$(qmicli -d /dev/cdc-wdm0 \
             --wds-start-network="apn='super',ip-type=4" \
             --client-no-release-cid 2>&1)"
         WDS_CID="$(echo "$WDS_OUTPUT" | sed -n "s/.*CID: '\([0-9]*\)'.*/\1/p")"
         WDS_PDH="$(echo "$WDS_OUTPUT" | sed -n "s/.*Packet data handle: '\([0-9]*\)'.*/\1/p")"
     }
 
+    setup_wwan0
     LOG "Starting WDS network..."
     wds_start_network
 
-    # Endpoint hangup: modem briefly unresponsive after LTE network attach completes.
-    # Wait and retry once.
-    if echo "$WDS_OUTPUT" | grep -q "endpoint hangup"; then
-        LOG "Endpoint hangup after LTE attach — waiting 15s for modem to stabilise..."
-        sleep 15
-        wds_start_network
-    fi
-
-    # If the modem retained a stale PDP context (USB power not cut on reboot),
-    # do a soft modem reset via AT+CFUN=1,1 and retry once.
-    # --dms-set-operating-mode=offline drops the QMI endpoint entirely and requires
-    # a physical power cycle to recover — AT+CFUN=1,1 is a clean soft reset.
+    # Stale PDP context (modem USB power maintained through Pi soft-reboot):
+    # reset modem via AT+CFUN=1,1 and retry.
     if echo "$WDS_OUTPUT" | grep -q "interface-in-use"; then
-        LOG "Stale PDP context detected — soft-resetting modem via AT+CFUN=1,1..."
-        systemctl stop ModemManager 2>/dev/null || true
-        sleep 1
+        LOG "Stale PDP context — resetting modem via AT+CFUN=1,1..."
         for port in ttyUSB2 ttyUSB3 ttyUSB1 ttyUSB0; do
             [[ -e "/dev/$port" ]] || continue
             setsid bash -c "
@@ -162,7 +158,8 @@ else
             qmicli -d /dev/cdc-wdm0 --dms-get-operating-mode &>/dev/null && break
             sleep 2
         done
-        sleep 3
+        sleep 5
+        setup_wwan0
         rm -f "$WDS_STATE"
         wds_start_network
     fi
@@ -176,29 +173,7 @@ else
     echo "$WDS_CID $WDS_PDH" > "$WDS_STATE"
     LOG "WDS network started (CID $WDS_CID, PDH $WDS_PDH)"
 
-    # Get IP settings from modem directly (more reliable than DHCP over QMI)
-    SETTINGS="$(qmicli -p -d /dev/cdc-wdm0 \
-        --client-cid="$WDS_CID" \
-        --wds-get-current-settings 2>/dev/null)"
-    WDS_IP="$(echo "$SETTINGS"    | sed -n 's/.*IPv4 address: \(.*\)/\1/p' | tr -d ' ')"
-    WDS_MASK="$(echo "$SETTINGS"  | sed -n 's/.*IPv4 subnet mask: \(.*\)/\1/p' | tr -d ' ')"
-    WDS_GW="$(echo "$SETTINGS"    | sed -n 's/.*IPv4 gateway address: \(.*\)/\1/p' | tr -d ' ')"
-    WDS_DNS1="$(echo "$SETTINGS"  | sed -n 's/.*IPv4 primary DNS: \(.*\)/\1/p' | tr -d ' ')"
-    WDS_MTU="$(echo "$SETTINGS"   | sed -n 's/.*MTU: \(.*\)/\1/p' | tr -d ' ')"
-
-    if [[ -n "${WDS_IP:-}" ]]; then
-        LOG "Configuring wwan0 from WDS settings: IP=$WDS_IP GW=$WDS_GW DNS=$WDS_DNS1"
-        # Convert subnet mask to prefix length
-        PREFIX="$(python3 -c "import ipaddress; print(ipaddress.IPv4Network('0.0.0.0/${WDS_MASK}').prefixlen)" 2>/dev/null || echo "30")"
-        ip addr flush dev wwan0 2>/dev/null || true
-        ip addr add "${WDS_IP}/${PREFIX}" dev wwan0
-        [[ -n "${WDS_GW:-}" ]] && ip route add default via "$WDS_GW" dev wwan0 metric 700 2>/dev/null || true
-        [[ -n "${WDS_MTU:-}" ]] && ip link set wwan0 mtu "$WDS_MTU" 2>/dev/null || true
-        [[ -n "${WDS_DNS1:-}" ]] && echo "nameserver $WDS_DNS1" > /etc/resolv.conf
-    else
-        LOG "No IP in WDS settings — falling back to udhcpc..."
-        udhcpc -q -f -n -i wwan0 2>/dev/null || true
-    fi
+    udhcpc -q -f -i wwan0 2>/dev/null || true
 
     CURRENT_IP="$(ip -4 addr show wwan0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)"
     if [[ -z "${CURRENT_IP:-}" ]]; then
