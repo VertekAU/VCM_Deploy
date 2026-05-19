@@ -1,0 +1,15 @@
+[Unit]
+Description=VCM QMI modem reconnect
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vcm_modem_reconnect.sh
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

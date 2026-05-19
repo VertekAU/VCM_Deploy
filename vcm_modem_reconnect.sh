@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+LOG() { echo "[vcm-modem-reconnect $(date -Is)] $*"; }
+
+MARKER="/var/lib/vcm/migration_qmi_done"
+
+# Run one-time Sixfab migration if needed
+if [[ ! -f "$MARKER" ]] && [[ -d /opt/sixfab ]]; then
+    LOG "Sixfab detected, migration not done — running migration"
+    if [[ ! -x /usr/local/sbin/vcm_modem_migrate.sh ]]; then
+        LOG "ERROR: vcm_modem_migrate.sh not found — cannot migrate"
+        exit 1
+    fi
+    /usr/local/sbin/vcm_modem_migrate.sh || { LOG "Migration failed"; exit 1; }
+fi
+
+# Wait for QMI device node (up to 30s)
+for i in $(seq 1 30); do
+    [[ -e /dev/cdc-wdm0 ]] && break
+    [[ "$i" -eq 30 ]] && { LOG "cdc-wdm0 not found after 30s — wwan0 unavailable, wlan0 sufficient"; exit 0; }
+    sleep 1
+done
+
+# Wait for wwan0 interface (up to 30s)
+for i in $(seq 1 30); do
+    ip link show wwan0 &>/dev/null && break
+    [[ "$i" -eq 30 ]] && { LOG "wwan0 not found after 30s — skipping LTE setup"; exit 0; }
+    sleep 1
+done
+
+# Check for a valid (non-APIPA) IPv4 on wwan0
+CURRENT_IP="$(ip -4 addr show wwan0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)"
+HEALTHY=0
+if [[ -n "${CURRENT_IP:-}" ]]; then
+    case "$CURRENT_IP" in
+        169.254.*) ;;
+        *) HEALTHY=1 ;;
+    esac
+fi
+
+if [[ "$HEALTHY" -eq 1 ]]; then
+    LOG "wwan0 already has valid IP $CURRENT_IP — healthy path"
+else
+    LOG "wwan0 has no valid IP (current: ${CURRENT_IP:-none}) — running QMI setup"
+
+    qmicli -d /dev/cdc-wdm0 --dms-get-operating-mode 2>/dev/null || true
+    ip link set wwan0 down
+    echo 'Y' | tee /sys/class/net/wwan0/qmi/raw_ip >/dev/null
+    ip link set wwan0 up
+    qmicli -d /dev/cdc-wdm0 --wda-get-data-format 2>/dev/null || true
+    qmicli -p -d /dev/cdc-wdm0 \
+        --device-open-net='net-raw-ip|net-no-qos-header' \
+        --wds-start-network="apn='super',ip-type=4" \
+        --client-no-release-cid 2>/dev/null || true
+    udhcpc -q -f -i wwan0 2>/dev/null || true
+
+    CURRENT_IP="$(ip -4 addr show wwan0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)"
+    if [[ -z "${CURRENT_IP:-}" ]]; then
+        LOG "QMI setup ran but wwan0 has no IP — wlan0 sufficient, continuing"
+        exit 0
+    fi
+    LOG "QMI setup complete, wwan0 IP: $CURRENT_IP"
+fi
+
+# Unconditionally set wwan0 default route metric to 700 so wlan0 remains preferred
+WAN_GW="$(ip route show default dev wwan0 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')"
+if [[ -n "${WAN_GW:-}" ]]; then
+    ip route del default dev wwan0 2>/dev/null || true
+    ip route add default via "$WAN_GW" dev wwan0 metric 700
+    LOG "wwan0 default route set via $WAN_GW metric 700"
+else
+    LOG "No default route on wwan0 to fix"
+fi
+
+exit 0

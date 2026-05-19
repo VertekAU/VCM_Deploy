@@ -1,0 +1,16 @@
+[Unit]
+Description=VCM Deploy — device provisioning and identity
+After=network-online.target
+After=vcm-modem-reconnect.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vcm_deploy.sh
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
