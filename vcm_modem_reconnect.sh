@@ -88,7 +88,21 @@ if [[ "$HEALTHY" -eq 1 ]]; then
 else
     LOG "wwan0 has no valid IP (current: ${CURRENT_IP:-none}) — running QMI setup"
 
-    qmicli -d /dev/cdc-wdm0 --dms-get-operating-mode 2>/dev/null || true
+    LOG "Waiting for modem hardware ready..."
+    for i in $(seq 1 30); do
+        qmicli -d /dev/cdc-wdm0 --dms-get-operating-mode &>/dev/null && break
+        [[ "$i" -eq 30 ]] && { LOG "Modem not ready after 60s — wlan0 sufficient, continuing"; exit 0; }
+        sleep 2
+    done
+
+    LOG "Waiting for LTE registration..."
+    for i in $(seq 1 30); do
+        qmicli -d /dev/cdc-wdm0 --nas-get-signal-strength 2>/dev/null | grep -q "Network 'lte'" && break
+        [[ "$i" -eq 30 ]] && { LOG "No LTE registration after 60s — wlan0 sufficient, continuing"; exit 0; }
+        sleep 2
+    done
+    sleep 3
+
     ip link set wwan0 down
     echo 'Y' | tee /sys/class/net/wwan0/qmi/raw_ip >/dev/null
     ip link set wwan0 up
