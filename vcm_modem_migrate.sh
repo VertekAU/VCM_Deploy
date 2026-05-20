@@ -10,16 +10,16 @@ LOG "Installing QMI dependencies..."
 apt-get update -qq
 apt-get install -y --no-upgrade libqmi-utils udhcpc busybox
 
-# Stop and mask Sixfab services
-LOG "Stopping Sixfab services..."
-for svc in core_agent.service core_manager.service; do
-    systemctl stop    "$svc" 2>/dev/null || true
-    systemctl disable "$svc" 2>/dev/null || true
-    systemctl mask    "$svc" 2>/dev/null || true
-done
+# Run Sixfab's own uninstaller while ECM internet is still up — it stops/removes services
+LOG "Running Sixfab uninstaller..."
+bash -c "$(curl -sN https://install.connect.sixfab.com)" -- --uninstall 2>/dev/null || true
 
-# Remove Sixfab — absence of /opt/sixfab prevents re-trigger on next boot
-LOG "Removing Sixfab..."
+# Belt-and-suspenders: mask any remaining services and delete directory
+LOG "Cleaning up Sixfab remnants..."
+for svc in core_agent.service core_manager.service; do
+    systemctl stop "$svc" 2>/dev/null || true
+    systemctl mask "$svc" 2>/dev/null || true
+done
 rm -rf /opt/sixfab 2>/dev/null || true
 systemctl daemon-reload 2>/dev/null || true
 
