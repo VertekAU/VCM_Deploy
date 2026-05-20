@@ -72,17 +72,28 @@ for i in $(seq 1 30); do
     [[ "$i" -eq 30 ]] && FAIL "No LTE registration after 60s"
     sleep 2
 done
-sleep 3
+
+LOG "Masking ModemManager to prevent QMI device grab..."
+systemctl stop ModemManager 2>/dev/null || true
+systemctl mask ModemManager 2>/dev/null || true
 
 LOG "Setting up QMI bearer..."
 ip link set wwan0 down
 echo 'Y' | tee /sys/class/net/wwan0/qmi/raw_ip >/dev/null
 ip link set wwan0 up
-qmicli -d /dev/cdc-wdm0 --wda-get-data-format
-qmicli -p -d /dev/cdc-wdm0 \
-    --device-open-net='net-raw-ip|net-no-qos-header' \
-    --wds-start-network="apn='super',ip-type=4" \
-    --client-no-release-cid
+
+WDS_PDH=""
+for i in $(seq 1 15); do
+    WDS_OUTPUT="$(qmicli -d /dev/cdc-wdm0 \
+        --wds-start-network="apn='super',ip-type=4" \
+        --client-no-release-cid 2>&1)"
+    WDS_PDH="$(echo "$WDS_OUTPUT" | sed -n "s/.*Packet data handle: '\([0-9]*\)'.*/\1/p")"
+    [[ -n "${WDS_PDH:-}" ]] && break
+    [[ "$i" -eq 15 ]] && break
+    sleep 1
+done
+[[ -n "${WDS_PDH:-}" ]] || FAIL "WDS start-network failed: $WDS_OUTPUT"
+
 udhcpc -q -f -i wwan0
 
 WAN_GW="$(ip route show default dev wwan0 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')"
