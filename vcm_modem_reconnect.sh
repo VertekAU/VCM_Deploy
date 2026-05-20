@@ -7,11 +7,10 @@ trap '' HUP
 
 LOG() { echo "[vcm-modem-reconnect $(date -Is)] $*"; }
 
-MARKER="/var/lib/vcm/migration_qmi_done"
 WDS_STATE="/var/lib/vcm/wds-state"   # persists CID and PDH across runs
 
 # --- Path 1: Sixfab migration (fleet devices with Sixfab agent still present) ---
-if [[ ! -f "$MARKER" ]] && [[ -d /opt/sixfab ]]; then
+if [[ -d /opt/sixfab ]]; then
     LOG "Sixfab detected, migration not done — running migration"
     if [[ ! -x /usr/local/sbin/vcm_modem_migrate.sh ]]; then
         LOG "ERROR: vcm_modem_migrate.sh not found — cannot migrate"
