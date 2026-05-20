@@ -108,7 +108,6 @@ else
         [[ "$i" -eq 30 ]] && { LOG "No LTE registration after 60s — wlan0 sufficient, continuing"; exit 0; }
         sleep 2
     done
-    sleep 10
 
     # Stop any stale WDS session from a previous run (prevents interface-in-use-config-match)
     if [[ -f "$WDS_STATE" ]]; then
@@ -139,7 +138,12 @@ else
 
     setup_wwan0
     LOG "Starting WDS network..."
-    wds_start_network
+    for i in $(seq 1 15); do
+        wds_start_network
+        [[ -n "${WDS_PDH:-}" ]] && break
+        [[ "$i" -eq 15 ]] && break
+        sleep 1
+    done
 
     # Stale PDP context (modem USB power maintained through Pi soft-reboot):
     # reset modem via AT+CFUN=1,1 and retry.
