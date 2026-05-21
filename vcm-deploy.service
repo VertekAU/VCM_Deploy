@@ -1,8 +1,6 @@
 [Unit]
 Description=VCM Deploy — device provisioning and identity
-After=network-online.target
 After=vcm-modem-reconnect.service
-Wants=network-online.target
 
 [Service]
 Type=oneshot

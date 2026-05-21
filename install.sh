@@ -50,11 +50,10 @@ systemctl daemon-reload
 systemctl enable vcm-modem-reconnect.service vcm-deploy.service
 
 LOG "Installation complete. Starting provisioning chain..."
-LOG "(Modem setup may take several minutes if Sixfab removal is required)"
-systemctl start vcm-modem-reconnect.service
-LOG "Modem setup complete. Running device provisioning..."
-# Run vcm_deploy.sh directly rather than via systemd — avoids network-online.target
-# dependency stall when triggered mid-session. The service unit still runs on future
-# boots via systemd with correct ordering.
-bash /usr/local/sbin/vcm_deploy.sh
-LOG "Provisioning complete. Follow vcm-update: journalctl -u vcm-update -f"
+# Start both services together — systemd honours After= ordering between them
+# (modem-reconnect runs first, deploy starts when it finishes). Both run as
+# systemd services so they survive terminal death (e.g. Sixfab agent killed
+# during Sixfab removal). install.sh exits immediately — safe to close terminal.
+systemctl start --no-block vcm-modem-reconnect.service vcm-deploy.service
+LOG "Provisioning running in background (terminal-safe)."
+LOG "Follow progress: journalctl -u vcm-modem-reconnect -u vcm-deploy -u vcm-update -f"
