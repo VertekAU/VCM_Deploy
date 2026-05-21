@@ -156,12 +156,31 @@ else
                 sleep 2
             " 2>/dev/null && LOG "AT+CFUN=1,1 sent via /dev/$port" && break || true
         done
-        LOG "Waiting for modem to recover (up to 60s)..."
+        # After CFUN=1,1 the modem reboots — USB re-enumerates and cdc-wdm0 disappears.
+        # Wait for it to drop, then reappear, then do full readiness checks before retrying.
+        LOG "Waiting for cdc-wdm0 to drop off USB (confirms modem reset started)..."
+        for i in $(seq 1 15); do
+            [[ ! -e /dev/cdc-wdm0 ]] && break
+            sleep 1
+        done
+        LOG "Waiting for cdc-wdm0 to reappear after reset (up to 3 min)..."
+        for i in $(seq 1 60); do
+            [[ -e /dev/cdc-wdm0 ]] && { LOG "cdc-wdm0 reappeared"; break; }
+            [[ "$i" -eq 60 ]] && { LOG "cdc-wdm0 not found after 3 minutes — wlan0 sufficient"; exit 0; }
+            sleep 3
+        done
+        LOG "Waiting for modem hardware ready..."
         for i in $(seq 1 30); do
             qmicli -d /dev/cdc-wdm0 --dms-get-operating-mode &>/dev/null && break
+            [[ "$i" -eq 30 ]] && { LOG "Modem not ready after 60s — wlan0 sufficient"; exit 0; }
             sleep 2
         done
-        sleep 5
+        LOG "Waiting for LTE registration..."
+        for i in $(seq 1 30); do
+            qmicli -d /dev/cdc-wdm0 --nas-get-signal-strength 2>/dev/null | grep -q "Network 'lte'" && break
+            [[ "$i" -eq 30 ]] && { LOG "No LTE registration after 60s — wlan0 sufficient"; exit 0; }
+            sleep 2
+        done
         setup_wwan0
         rm -f "$WDS_STATE"
         wds_start_network
