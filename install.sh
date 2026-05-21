@@ -52,6 +52,9 @@ systemctl enable vcm-modem-reconnect.service vcm-deploy.service
 LOG "Installation complete. Starting provisioning chain..."
 LOG "(Modem setup may take several minutes if Sixfab removal is required)"
 systemctl start vcm-modem-reconnect.service
-LOG "Modem setup complete. Starting device provisioning in background..."
-systemctl start --no-block vcm-deploy.service
-LOG "Follow progress: journalctl -u vcm-deploy -u vcm-update -f"
+LOG "Modem setup complete. Running device provisioning..."
+# Run vcm_deploy.sh directly rather than via systemd — avoids network-online.target
+# dependency stall when triggered mid-session. The service unit still runs on future
+# boots via systemd with correct ordering.
+bash /usr/local/sbin/vcm_deploy.sh
+LOG "Provisioning complete. Follow vcm-update: journalctl -u vcm-update -f"
