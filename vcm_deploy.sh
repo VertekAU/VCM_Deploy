@@ -193,6 +193,11 @@ EOF
         if [[ -f "$VCM_UPDATE_DIR/install.sh" ]]; then
             LOG "Running VCM_Update install.sh"
             bash "$VCM_UPDATE_DIR/install.sh"
+            # Start vcm-update immediately on first provision — it's enabled for future
+            # boots but won't start automatically this boot since it was just installed.
+            # --no-block avoids deadlock: vcm-update has After=vcm-deploy.service.
+            LOG "Starting vcm-update.service..."
+            systemctl start --no-block vcm-update.service 2>/dev/null || true
         fi
     fi
 }

@@ -45,7 +45,9 @@ install -m 0644 -o root -g root "$INSTALL_DIR/vcm-deploy.service"          "$SYS
 systemctl daemon-reload
 systemctl enable vcm-modem-reconnect.service vcm-deploy.service
 
-LOG "Installation complete."
-LOG "To start immediately:  systemctl start vcm-modem-reconnect.service"
-LOG "                       systemctl start vcm-deploy.service"
-LOG "On next boot both services will run automatically."
+LOG "Installation complete. Starting provisioning chain..."
+LOG "(Modem setup may take several minutes if Sixfab removal is required)"
+systemctl start vcm-modem-reconnect.service
+LOG "Modem setup complete. Starting device provisioning in background..."
+systemctl start --no-block vcm-deploy.service
+LOG "Follow progress: journalctl -u vcm-deploy -u vcm-update -f"
