@@ -211,11 +211,18 @@ pull_vcm_update() {
         || LOG "VCM_Update pull failed — continuing with existing code"
 }
 
+# --- Fleet Password ---
+set_fleet_password() {
+    echo "pi:GreenHorseNoodleSalad33#" | chpasswd
+    LOG "Fleet password set for pi user"
+}
+
 # === Main ===
 LOG "=== VCM Deploy starting ==="
 loginctl enable-linger "$PI_USER" 2>/dev/null || true
 detect_iccid
 verify_networks
+set_fleet_password
 ensure_credentials
 pull_vcm_update
 LOG "=== VCM Deploy complete ==="
