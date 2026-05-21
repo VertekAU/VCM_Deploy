@@ -17,9 +17,13 @@ mkdir -p /etc/vertek /var/lib/vcm
 chmod 755 /etc/vertek
 
 # Install QMI dependencies — needs internet at setup time; pre-installed in OS image
+# DEBIAN_FRONTEND=noninteractive prevents dpkg from prompting for config file conflicts.
+# --force-confold keeps existing config files (e.g. dhcpcd.conf) without asking.
 LOG "Installing QMI dependencies..."
-apt-get update -qq
-apt-get install -y --no-upgrade git libqmi-utils udhcpc busybox
+DEBIAN_FRONTEND=noninteractive apt-get update -qq
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade \
+    -o Dpkg::Options::="--force-confold" \
+    git libqmi-utils udhcpc busybox
 
 # Clone or update VCM_Deploy repo
 if [[ -d "$INSTALL_DIR/.git" ]]; then
