@@ -113,7 +113,7 @@ else
         read -r STALE_CID STALE_PDH < "$WDS_STATE" 2>/dev/null || true
         if [[ -n "${STALE_CID:-}" && -n "${STALE_PDH:-}" ]]; then
             LOG "Stopping stale WDS session (CID $STALE_CID, PDH $STALE_PDH)..."
-            qmicli -d /dev/cdc-wdm0 \
+            timeout 10 qmicli -d /dev/cdc-wdm0 \
                 --client-cid="$STALE_CID" \
                 --wds-stop-network="$STALE_PDH" \
                 --client-no-release-cid 2>/dev/null || true
