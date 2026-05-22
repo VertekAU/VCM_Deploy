@@ -182,6 +182,12 @@ EOF
         fi
     fi
 
+    # If VCM_Update has a partial .git (mid-clone power loss), remove so we re-clone cleanly
+    if [[ -d "$VCM_UPDATE_DIR/.git" ]]; then
+        sudo -u "$PI_USER" git -C "$VCM_UPDATE_DIR" rev-parse --git-dir &>/dev/null \
+            || { LOG "VCM_Update repo corrupt — removing for fresh clone"; rm -rf "$VCM_UPDATE_DIR"; }
+    fi
+
     # Clone VCM_Update if not present (first provision or fleet migration)
     if [[ ! -d "$VCM_UPDATE_DIR/.git" ]]; then
         LOG "Cloning VCM_Update to $VCM_UPDATE_DIR"
