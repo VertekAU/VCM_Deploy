@@ -202,6 +202,13 @@ if ! nmcli connection show --active 2>/dev/null | grep -q "$NM_CONN_NAME"; then
             sleep 3
         done
 
+        # Restart MM so it re-discovers the modem with clean state — without this,
+        # MM may retain stale bearer/connection state from the failed activation attempt,
+        # causing re-detection or re-registration to behave inconsistently.
+        LOG "Restarting ModemManager for clean modem re-discovery..."
+        systemctl restart ModemManager 2>/dev/null || true
+        sleep 3
+
         udevadm trigger --subsystem-match=tty
         udevadm trigger --subsystem-match=usbmisc
         udevadm trigger --subsystem-match=net
