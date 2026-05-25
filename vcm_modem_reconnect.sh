@@ -162,11 +162,69 @@ if ! nmcli connection show "$NM_CONN_NAME" &>/dev/null; then
         || { LOG "Failed to create NM profile — wlan0 sufficient, continuing"; exit 0; }
 fi
 
-# --- Activate NM connection if not already active ---
+# --- Activate NM connection if not already active --- with stale PDP recovery ---
+# interface-in-use-config-match means the modem has an existing data session from
+# a previous manager (Sixfab agent, old WDS session, or soft-reboot with USB power
+# maintained). NM cannot create a new bearer until it is cleared. The only reliable
+# fix is a modem reset via AT+CFUN=1,1 — same approach as v1 qmicli path.
 if ! nmcli connection show --active 2>/dev/null | grep -q "$NM_CONN_NAME"; then
     LOG "Bringing up '$NM_CONN_NAME'..."
-    nmcli connection up "$NM_CONN_NAME" 2>/dev/null \
-        || { LOG "NM activation failed — wlan0 sufficient, continuing"; exit 0; }
+    if ! nmcli connection up "$NM_CONN_NAME" 2>/dev/null; then
+        LOG "NM activation failed — attempting modem reset to clear stale PDP context..."
+
+        RESET_SENT=0
+        for port in ttyUSB2 ttyUSB3 ttyUSB1 ttyUSB0; do
+            [[ -e "/dev/$port" ]] || continue
+            setsid bash -c "
+                exec 3<>/dev/$port 2>/dev/null || exit 1
+                printf 'AT+CFUN=1,1\r' >&3
+                sleep 2
+            " 2>/dev/null \
+                && RESET_SENT=1 \
+                && LOG "AT+CFUN=1,1 sent via /dev/$port — modem rebooting" \
+                && break || true
+        done
+
+        if [[ "$RESET_SENT" -eq 0 ]]; then
+            LOG "Could not send modem reset — wlan0 sufficient, continuing"
+            exit 0
+        fi
+
+        LOG "Waiting for cdc-wdm0 to drop after reset..."
+        for i in $(seq 1 15); do
+            [[ ! -e /dev/cdc-wdm0 ]] && break
+            sleep 1
+        done
+        LOG "Waiting for cdc-wdm0 to reappear after reset (up to 3 min)..."
+        for i in $(seq 1 60); do
+            [[ -e /dev/cdc-wdm0 ]] && { LOG "cdc-wdm0 reappeared"; break; }
+            [[ "$i" -eq 60 ]] && { LOG "cdc-wdm0 not found after reset — wlan0 sufficient"; exit 0; }
+            sleep 3
+        done
+
+        udevadm trigger --subsystem-match=tty
+        udevadm trigger --subsystem-match=usbmisc
+        udevadm trigger --subsystem-match=net
+
+        for i in $(seq 1 30); do
+            MODEM_IDX="$(mmcli -L 2>/dev/null | grep -o 'Modem/[0-9]*' | grep -o '[0-9]*' | tail -1)"
+            [[ -n "${MODEM_IDX:-}" ]] && { LOG "Modem re-detected at index $MODEM_IDX"; break; }
+            [[ "$i" -eq 30 ]] && { LOG "MM did not re-detect modem after reset — wlan0 sufficient"; exit 0; }
+            sleep 2
+        done
+
+        for i in $(seq 1 30); do
+            state="$(mmcli -m "$MODEM_IDX" --output-keyvalue 2>/dev/null \
+                | grep 'modem.generic.state[[:space:]]' | awk -F': ' '{print $NF}' | tr -d ' ')"
+            [[ "$state" == "registered" || "$state" == "connected" ]] && break
+            [[ "$i" -eq 30 ]] && { LOG "No LTE registration after reset — wlan0 sufficient"; exit 0; }
+            sleep 2
+        done
+
+        LOG "Retrying NM activation after modem reset..."
+        nmcli connection up "$NM_CONN_NAME" 2>/dev/null \
+            || { LOG "NM activation failed after reset — wlan0 sufficient, continuing"; exit 0; }
+    fi
 fi
 
 # --- Wait for wwan0 valid IP (up to 60s) ---
