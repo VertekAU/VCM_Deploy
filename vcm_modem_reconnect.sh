@@ -234,9 +234,11 @@ if ! nmcli connection show --active 2>/dev/null | grep -q "$NM_CONN_NAME"; then
     fi
 fi
 
-# --- Wait for wwan0 valid IP (up to 60s) ---
+# --- Wait for wwan0 valid IP (up to 3 min) ---
+# Bearer IP assignment after a fresh modem start or ECM→QMI flip can take
+# significantly longer than after a normal boot — allow the full 3 minutes.
 CURRENT_IP=""
-for i in $(seq 1 30); do
+for i in $(seq 1 90); do
     ip="$(ip -4 addr show wwan0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)"
     if [[ -n "${ip:-}" ]]; then
         case "$ip" in
@@ -244,7 +246,7 @@ for i in $(seq 1 30); do
             *) CURRENT_IP="$ip"; break ;;
         esac
     fi
-    [[ "$i" -eq 30 ]] && { LOG "wwan0 no valid IP after 60s — wlan0 sufficient, continuing"; exit 0; }
+    [[ "$i" -eq 90 ]] && { LOG "wwan0 no valid IP after 3 min — wlan0 sufficient, continuing"; exit 0; }
     sleep 2
 done
 
