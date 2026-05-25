@@ -77,9 +77,11 @@ done
 
 # --- Clean up legacy qmicli/dhcpcd artefacts from v1 ---
 # dhcpcd wwan0 config is replaced by NM+MM; remove so they don't conflict.
-if grep -q "allowinterfaces wwan" /etc/dhcpcd.conf 2>/dev/null; then
-    LOG "Removing legacy dhcpcd wwan0 config..."
-    sed -i '/allowinterfaces wwan/d' /etc/dhcpcd.conf
+# Old script appended both lines on every boot without an idempotency check,
+# so there may be many duplicate entries — delete all occurrences.
+if grep -qE "allowinterfaces wwan|nohook resolv.conf" /etc/dhcpcd.conf 2>/dev/null; then
+    LOG "Removing legacy dhcpcd wwan0 config (allowinterfaces wwan* / nohook resolv.conf)..."
+    sed -i '/allowinterfaces wwan/d; /nohook resolv\.conf/d' /etc/dhcpcd.conf
 fi
 # WDS state file is no longer used — remove if present.
 rm -f /var/lib/vcm/wds-state
