@@ -1,0 +1,7 @@
+[Unit]
+Description=Reboot after VCM provisioning failure — all retries exhausted
+
+[Service]
+Type=oneshot
+# --no-block prevents waiting for reboot to complete (call would never return)
+ExecStart=/bin/systemctl --no-block reboot

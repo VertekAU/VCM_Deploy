@@ -45,6 +45,7 @@ install -m 0755 -o root -g root "$INSTALL_DIR/vcm_deploy.sh"          "$SBIN/vcm
 LOG "Installing systemd units..."
 install -m 0644 -o root -g root "$INSTALL_DIR/vcm-modem-reconnect.service" "$SYSTEMD/vcm-modem-reconnect.service"
 install -m 0644 -o root -g root "$INSTALL_DIR/vcm-deploy.service"          "$SYSTEMD/vcm-deploy.service"
+install -m 0644 -o root -g root "$INSTALL_DIR/vcm-failure-reboot.service"  "$SYSTEMD/vcm-failure-reboot.service"
 
 systemctl daemon-reload
 systemctl enable vcm-modem-reconnect.service vcm-deploy.service
