@@ -68,7 +68,9 @@ detect_iccid() {
                 break
             fi
         done
-        # ModemManager is left stopped — qmicli replaces its function
+        # Restart ModemManager — stopped to release port locks for the AT probe.
+        # Without this, NM cannot manage the LTE bearer after ICCID is cached.
+        systemctl start ModemManager 2>/dev/null || true
     fi
 
     [[ -n "${iccid:-}" ]] || FAIL "Could not detect ICCID — check modem hardware and connectivity"

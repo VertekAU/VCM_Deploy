@@ -149,6 +149,7 @@ for i in $(seq 1 30); do
 done
 
 # --- Ensure NM GSM connection profile exists ---
+_profile_just_created=0
 if ! nmcli connection show "$NM_CONN_NAME" &>/dev/null; then
     LOG "Creating NM connection profile '$NM_CONN_NAME'..."
     nmcli connection add \
@@ -160,6 +161,21 @@ if ! nmcli connection show "$NM_CONN_NAME" &>/dev/null; then
         ipv4.route-metric 700 \
         ipv6.route-metric 700 2>/dev/null \
         || { LOG "Failed to create NM profile — wlan0 sufficient, continuing"; exit 0; }
+    _profile_just_created=1
+fi
+
+# After profile creation NM fires autoconnect immediately. Wait for that attempt
+# to settle (leave "activating" state) before we check IP or call connection up —
+# calling nmcli connection up while NM is mid-activation returns an error that
+# would falsely trigger stale PDP recovery and an unnecessary modem reset.
+if [[ "$_profile_just_created" -eq 1 ]]; then
+    LOG "Waiting for NM autoconnect to settle (up to 30s)..."
+    for i in $(seq 1 30); do
+        _nm_state="$(nmcli -t -f GENERAL.STATE connection show "$NM_CONN_NAME" 2>/dev/null \
+            | cut -d: -f2 | head -1)" || true
+        [[ "${_nm_state:-}" != "activating" ]] && break
+        sleep 1
+    done
 fi
 
 # --- Activate NM connection if not already up with a valid IP ---

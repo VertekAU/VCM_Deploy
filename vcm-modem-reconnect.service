@@ -2,6 +2,8 @@
 Description=VCM QMI modem reconnect
 After=network-online.target
 Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=300
 
 [Service]
 Type=oneshot
@@ -10,6 +12,8 @@ ExecStart=/usr/local/sbin/vcm_modem_reconnect.sh
 TimeoutStartSec=600
 StandardOutput=journal
 StandardError=journal
+Restart=on-failure
+RestartSec=30
 
 [Install]
 WantedBy=multi-user.target
