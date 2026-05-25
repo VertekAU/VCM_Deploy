@@ -53,7 +53,9 @@ LOG "Installation complete. Starting provisioning chain..."
 # Start both services together — systemd honours After= ordering between them
 # (modem-reconnect runs first, deploy starts when it finishes). Both run as
 # systemd services so they survive terminal death (e.g. Sixfab agent killed
-# during Sixfab removal). install.sh exits immediately — safe to close terminal.
+# during Sixfab removal).
 systemctl start --no-block vcm-modem-reconnect.service vcm-deploy.service
-LOG "Provisioning running in background (terminal-safe)."
-LOG "Follow progress: journalctl -u vcm-modem-reconnect -u vcm-deploy -u vcm-update -f"
+LOG "Provisioning running. Following logs (Ctrl+C to detach — services continue)..."
+# exec replaces this shell with journalctl — Ctrl+C exits the log tail only,
+# services keep running as they are systemd-managed.
+exec journalctl -f -u vcm-modem-reconnect.service -u vcm-deploy.service -u vcm-update.service
