@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # VCM_Deploy installer
-# Usage: curl -sS https://raw.githubusercontent.com/VertekAU/VCM_Deploy/main/install.sh | sudo bash
+# Production: curl -sS https://raw.githubusercontent.com/VertekAU/VCM_Deploy/main/install.sh | sudo bash
+# Dev branch: curl -sS https://raw.githubusercontent.com/VertekAU/VCM_Deploy/dev/install.sh | sudo VCM_BRANCH=dev bash
 set -euo pipefail
 
 LOG() { echo "[vcm-deploy install $(date -Is)] $*"; }
@@ -8,6 +9,7 @@ LOG() { echo "[vcm-deploy install $(date -Is)] $*"; }
 [[ "$EUID" -ne 0 ]] && { echo "Run as root: sudo bash"; exit 1; }
 
 REPO="https://github.com/VertekAU/VCM_Deploy.git"
+BRANCH="${VCM_BRANCH:-main}"
 INSTALL_DIR="/home/pi/vcm_deploy"
 SBIN="/usr/local/sbin"
 SYSTEMD="/etc/systemd/system"
@@ -27,11 +29,13 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade \
 
 # Clone or update VCM_Deploy repo
 if [[ -d "$INSTALL_DIR/.git" ]]; then
-    LOG "Updating existing VCM_Deploy at $INSTALL_DIR"
+    LOG "Updating existing VCM_Deploy at $INSTALL_DIR (branch: $BRANCH)"
+    git -C "$INSTALL_DIR" fetch origin
+    git -C "$INSTALL_DIR" checkout "$BRANCH"
     git -C "$INSTALL_DIR" pull --ff-only
 else
-    LOG "Cloning VCM_Deploy to $INSTALL_DIR"
-    git clone "$REPO" "$INSTALL_DIR"
+    LOG "Cloning VCM_Deploy to $INSTALL_DIR (branch: $BRANCH)"
+    git clone -b "$BRANCH" "$REPO" "$INSTALL_DIR"
 fi
 chown -R pi:pi "$INSTALL_DIR"
 
