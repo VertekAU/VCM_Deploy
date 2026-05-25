@@ -9,8 +9,10 @@ LOG() { echo "[vcm-deploy install $(date -Is)] $*"; }
 [[ "$EUID" -ne 0 ]] && { echo "Run as root: sudo bash"; exit 1; }
 
 REPO="https://github.com/VertekAU/VCM_Deploy.git"
-BRANCH="${VCM_BRANCH:-main}"
 INSTALL_DIR="/home/pi/vcm_deploy"
+# If repo already exists, default to its current branch so re-runs stay on the same branch.
+# VCM_BRANCH overrides everything; fresh clone defaults to main.
+BRANCH="${VCM_BRANCH:-$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}"
 SBIN="/usr/local/sbin"
 SYSTEMD="/etc/systemd/system"
 
