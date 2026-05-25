@@ -3,6 +3,9 @@ Description=VCM Deploy — device provisioning and identity
 After=vcm-modem-reconnect.service
 # Reboot after all retries exhausted — device is unreachable without provisioning
 OnFailure=vcm-failure-reboot.service
+# 10 attempts at 30s intervals (~5 min) before entering failed state
+StartLimitBurst=10
+StartLimitIntervalSec=600
 
 [Service]
 Type=oneshot
@@ -11,11 +14,8 @@ ExecStart=/usr/local/sbin/vcm_deploy.sh
 TimeoutStartSec=600
 StandardOutput=journal
 StandardError=journal
-# Retry up to 5 times (30s apart) before entering failed state and triggering OnFailure
 Restart=on-failure
 RestartSec=30
-StartLimitBurst=10
-StartLimitIntervalSec=600
 
 [Install]
 WantedBy=multi-user.target
