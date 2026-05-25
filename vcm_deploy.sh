@@ -28,12 +28,20 @@ detect_iccid() {
 
     local iccid=""
 
-    # ModemManager holds ttyUSB port locks when active — query through it first
+    # ModemManager holds ttyUSB port locks when active — query through it first.
+    # Use dynamic modem index (not hardcoded 0) — index increments on each MM restart.
+    # || true prevents set -euo pipefail from killing the script if mmcli fails.
     if systemctl is-active --quiet ModemManager 2>/dev/null && command -v mmcli &>/dev/null; then
         LOG "ModemManager is active — querying ICCID via mmcli..."
-        iccid="$(mmcli -m 0 --timeout=15 --command="AT+CCID" 2>/dev/null \
-            | grep '+CCID:' | awk -F': ' '{print $2}' | tr -d '\r\n ')"
-        [[ -n "${iccid:-}" ]] && LOG "ICCID from ModemManager: $iccid"
+        local modem_idx
+        modem_idx="$(mmcli -L 2>/dev/null | grep -o 'Modem/[0-9]*' | grep -o '[0-9]*' | tail -1)" || true
+        if [[ -n "${modem_idx:-}" ]]; then
+            iccid="$(mmcli -m "$modem_idx" --timeout=15 --command="AT+CCID" 2>/dev/null \
+                | grep '+CCID:' | awk -F': ' '{print $2}' | tr -d '\r\n ')" || true
+            [[ -n "${iccid:-}" ]] && LOG "ICCID from ModemManager (modem $modem_idx): $iccid"
+        else
+            LOG "ModemManager active but no modem detected — falling back to AT probe"
+        fi
     fi
 
     # Direct AT probe — stop ModemManager first to release port locks
