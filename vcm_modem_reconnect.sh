@@ -162,12 +162,18 @@ if ! nmcli connection show "$NM_CONN_NAME" &>/dev/null; then
         || { LOG "Failed to create NM profile — wlan0 sufficient, continuing"; exit 0; }
 fi
 
-# --- Activate NM connection if not already active --- with stale PDP recovery ---
-# interface-in-use-config-match means the modem has an existing data session from
-# a previous manager (Sixfab agent, old WDS session, or soft-reboot with USB power
-# maintained). NM cannot create a new bearer until it is cleared. The only reliable
-# fix is a modem reset via AT+CFUN=1,1 — same approach as v1 qmicli path.
-if ! nmcli connection show --active 2>/dev/null | grep -q "$NM_CONN_NAME"; then
+# --- Activate NM connection if not already up with a valid IP ---
+# Do NOT check nmcli connection show --active — NM autoconnect fires immediately
+# on profile creation and shows the connection as "active" before a bearer is
+# established or an IP is assigned. Always check the interface itself instead.
+# If wwan0 already has a routable IP (e.g. on subsequent boots), skip activation.
+# interface-in-use-config-match: modem has a stale data session from a previous
+# manager (Sixfab, old WDS, soft-reboot). Only fix is AT+CFUN=1,1 modem reset.
+_existing_ip="$(ip -4 addr show wwan0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)"
+if [[ -n "${_existing_ip:-}" && "$_existing_ip" != 169.254.* ]]; then
+    CURRENT_IP="$_existing_ip"
+    LOG "wwan0 already has IP $CURRENT_IP — skipping activation"
+else
     LOG "Bringing up '$NM_CONN_NAME'..."
     if ! nmcli connection up "$NM_CONN_NAME" 2>/dev/null; then
         LOG "NM activation failed — attempting modem reset to clear stale PDP context..."
