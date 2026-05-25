@@ -13,9 +13,9 @@ StandardOutput=journal
 StandardError=journal
 # Retry up to 5 times (30s apart) before entering failed state and triggering OnFailure
 Restart=on-failure
-RestartSec=30
-StartLimitBurst=5
-StartLimitIntervalSec=300
+RestartSec=300
+StartLimitBurst=10
+StartLimitIntervalSec=3600
 
 [Install]
 WantedBy=multi-user.target
