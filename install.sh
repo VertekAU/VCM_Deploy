@@ -27,7 +27,7 @@ LOG "Installing QMI dependencies..."
 DEBIAN_FRONTEND=noninteractive apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade \
     -o Dpkg::Options::="--force-confold" \
-    git libqmi-utils udhcpc busybox
+    git libqmi-utils udhcpc busybox modemmanager
 
 # Clone or update VCM_Deploy repo
 if [[ -d "$INSTALL_DIR/.git" ]]; then

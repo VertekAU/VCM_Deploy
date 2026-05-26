@@ -8,7 +8,7 @@ LOG "=== Sixfab removal ==="
 # Install QMI tooling while Sixfab ECM still provides internet
 LOG "Installing QMI dependencies..."
 apt-get update -qq
-apt-get install -y --no-upgrade libqmi-utils udhcpc busybox
+apt-get install -y --no-upgrade libqmi-utils udhcpc busybox modemmanager
 
 # Run Sixfab's own uninstaller while ECM internet is still up — it stops/removes services
 LOG "Running Sixfab uninstaller..."
