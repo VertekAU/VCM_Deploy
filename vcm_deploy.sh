@@ -33,14 +33,20 @@ detect_iccid() {
     # || true prevents set -euo pipefail from killing the script if mmcli fails.
     if systemctl is-active --quiet ModemManager 2>/dev/null && command -v mmcli &>/dev/null; then
         LOG "ModemManager is active — querying ICCID via mmcli..."
+        # MM may have just restarted (e.g. after stale PDP recovery) — poll up to 20s
+        # for the modem index to appear before falling back to the direct AT probe.
         local modem_idx
-        modem_idx="$(mmcli -L 2>/dev/null | grep -o 'Modem/[0-9]*' | grep -o '[0-9]*' | tail -1)" || true
+        for _mm_wait in $(seq 1 20); do
+            modem_idx="$(mmcli -L 2>/dev/null | grep -o 'Modem/[0-9]*' | grep -o '[0-9]*' | tail -1)" || true
+            [[ -n "${modem_idx:-}" ]] && break
+            sleep 1
+        done
         if [[ -n "${modem_idx:-}" ]]; then
             iccid="$(mmcli -m "$modem_idx" --timeout=15 --command="AT+CCID" 2>/dev/null \
                 | grep '+CCID:' | awk -F': ' '{print $2}' | tr -d '\r\n ')" || true
             [[ -n "${iccid:-}" ]] && LOG "ICCID from ModemManager (modem $modem_idx): $iccid"
         else
-            LOG "ModemManager active but no modem detected — falling back to AT probe"
+            LOG "ModemManager active but no modem detected after 20s — falling back to AT probe"
         fi
     fi
 
