@@ -20,6 +20,16 @@ SYSTEMD="/etc/systemd/system"
 mkdir -p /etc/vertek /var/lib/vcm
 chmod 755 /etc/vertek
 
+# Mask Sixfab services before installing modemmanager — the Sixfab agent
+# removes MM when it detects it. Masking stops the agent without dropping
+# the ECM interface (kernel-managed USB gadget; internet stays up).
+if systemctl cat core_agent.service &>/dev/null; then
+    LOG "Sixfab detected — masking services before MM install..."
+    systemctl stop  core_agent.service core_manager.service 2>/dev/null || true
+    systemctl mask  core_agent.service core_manager.service 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+fi
+
 # Install QMI dependencies — needs internet at setup time; pre-installed in OS image
 # DEBIAN_FRONTEND=noninteractive prevents dpkg from prompting for config file conflicts.
 # --force-confold keeps existing config files (e.g. dhcpcd.conf) without asking.
