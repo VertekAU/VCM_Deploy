@@ -1,3 +1,7 @@
+v1.1.1
+2026-06-17
+- install.sh: mask Sixfab services without stopping — stopping the agent drops the ECM route and kills any SSH session running the installer; mask-only keeps the agent running and ECM up through install.sh; the actual stop happens inside vcm_modem_migrate.sh which runs as a detached systemd service
+
 v1.1.0
 2026-05-26
 - vcm_modem_reconnect.sh: replaced qmicli/WDS/dhcpcd with ModemManager + NetworkManager for LTE management
