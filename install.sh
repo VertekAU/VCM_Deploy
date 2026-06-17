@@ -21,11 +21,12 @@ mkdir -p /etc/vertek /var/lib/vcm
 chmod 755 /etc/vertek
 
 # Mask Sixfab services before installing modemmanager — the Sixfab agent
-# removes MM when it detects it. Masking stops the agent without dropping
-# the ECM interface (kernel-managed USB gadget; internet stays up).
+# removes MM when it detects it. Mask only (do NOT stop) — stopping the agent
+# drops the ECM routing and kills any SSH session running this script.
+# The kernel USB gadget stays up; the agent keeps running until vcm_modem_migrate.sh
+# stops it safely from within a systemd service (detached from this terminal).
 if systemctl cat core_agent.service &>/dev/null; then
     LOG "Sixfab detected — masking services before MM install..."
-    systemctl stop  core_agent.service core_manager.service 2>/dev/null || true
     systemctl mask  core_agent.service core_manager.service 2>/dev/null || true
     systemctl daemon-reload 2>/dev/null || true
 fi
