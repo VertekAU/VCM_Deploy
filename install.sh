@@ -35,6 +35,12 @@ fi
 # DEBIAN_FRONTEND=noninteractive prevents dpkg from prompting for config file conflicts.
 # --force-confold keeps existing config files (e.g. dhcpcd.conf) without asking.
 LOG "Installing QMI dependencies..."
+# Sixfab agent may still be running its own apt-get — wait for the lock
+for _apt_wait in $(seq 1 24); do
+    flock -n /var/lib/apt/lists/lock true 2>/dev/null && break
+    LOG "Waiting for apt lock (attempt $_apt_wait/24)..."
+    sleep 5
+done
 DEBIAN_FRONTEND=noninteractive apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade \
     -o Dpkg::Options::="--force-confold" \

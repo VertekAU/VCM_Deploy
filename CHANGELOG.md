@@ -1,3 +1,6 @@
+v1.1.2 (unreleased)
+- install.sh: wait up to 2 minutes for apt lock before running apt-get — Sixfab agent may hold the lock mid-operation when masked but not yet stopped
+
 v1.1.1
 2026-06-17
 - install.sh: mask Sixfab services without stopping — stopping the agent drops the ECM route and kills any SSH session running the installer; mask-only keeps the agent running and ECM up through install.sh; the actual stop happens inside vcm_modem_migrate.sh which runs as a detached systemd service
