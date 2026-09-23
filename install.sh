@@ -73,6 +73,15 @@ install -m 0644 -o root -g root "$INSTALL_DIR/vcm-failure-reboot.service"  "$SYS
 systemctl daemon-reload
 systemctl enable vcm-modem-reconnect.service vcm-deploy.service
 
+# Old VCM (< v1.0.4) decal loop can block the modem's USB hub mid-provision.
+# vcm_update.sh restarts these once VCM has been updated.
+for svc in master.service core-diagnostics.service; do
+    if systemctl is-active --quiet "$svc"; then
+        LOG "Stopping $svc for provisioning..."
+        systemctl stop "$svc" || true
+    fi
+done
+
 LOG "Installation complete. Starting provisioning chain..."
 # Start both services together — systemd honours After= ordering between them
 # (modem-reconnect runs first, deploy starts when it finishes). Both run as

@@ -11,6 +11,26 @@ UDEV_RULE="/etc/udev/rules.d/77-mm-quectel-ec25-qmi.rules"
 NM_CONN_NAME="vertek-lte"
 LTE_APN="super"
 
+# --- Unblock USB hub / modem in usbguard ---
+# VCM < v1.0.4 decal loop null-matches the hub (empty serial) against decals with an
+# empty hardware_id and blocks it, which drops the modem off USB.
+unblock_modem_path() {
+    command -v usbguard &>/dev/null && systemctl is-active --quiet usbguard || return 1
+    local ids
+    ids="$(usbguard list-devices 2>/dev/null \
+        | awk '$2=="block" && ($4=="0424:2514" || $4 ~ /^2c7c:/) {sub(":","",$1); print $1}')"
+    [[ -n "$ids" ]] || return 1
+    for dev_id in $ids; do
+        LOG "usbguard: allowing blocked hub/modem device $dev_id"
+        usbguard allow-device "$dev_id" 2>/dev/null || true
+    done
+}
+if unblock_modem_path; then
+    sleep 5   # let devices behind the hub enumerate, then catch the modem itself
+    unblock_modem_path || true
+    sleep 5
+fi
+
 # --- Path 1: Sixfab migration (fleet devices with Sixfab agent still present) ---
 if [[ -d /opt/sixfab ]]; then
     LOG "Sixfab detected, migration not done — running migration"
