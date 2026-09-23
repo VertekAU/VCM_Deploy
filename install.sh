@@ -41,6 +41,10 @@ for _apt_wait in $(seq 1 24); do
     LOG "Waiting for apt lock (attempt $_apt_wait/24)..."
     sleep 5
 done
+# An interrupted earlier apt run (e.g. power loss) leaves dpkg half-configured,
+# and apt-get install refuses to run until it's resolved.
+DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confold \
+    || LOG "WARNING: dpkg --configure -a failed — apt-get may fail below"
 DEBIAN_FRONTEND=noninteractive apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade \
     -o Dpkg::Options::="--force-confold" \

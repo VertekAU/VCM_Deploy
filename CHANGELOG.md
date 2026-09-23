@@ -1,5 +1,6 @@
 v1.1.2 (unreleased)
 - install.sh: wait up to 2 minutes for apt lock before running apt-get — Sixfab agent may hold the lock mid-operation when masked but not yet stopped
+- install.sh: run dpkg --configure -a before apt-get — a previously interrupted apt run leaves packages half-configured and apt-get install refuses to proceed
 - vcm_modem_reconnect.sh: allow usbguard-blocked USB hub (0424:2514) and Quectel modem (2c7c:*) before probing the modem — VCM < v1.0.4 decal loop null-matches the hub against decals with empty hardware_id and blocks it, hiding the modem
 - install.sh: stop master.service and core-diagnostics.service before starting the provisioning chain so an old decal loop cannot re-block the hub mid-provision; vcm_update.sh restarts them
 
