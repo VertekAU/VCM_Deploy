@@ -68,7 +68,7 @@ detect_iccid() {
                 sleep 1
                 timeout 2 cat <&3 2>/dev/null || true
             )" 2>/dev/null || continue
-            iccid="$(echo "$response" | grep '+CCID:' | awk -F': ' '{print $2}' | tr -d '\r\n ')"
+            iccid="$(echo "$response" | grep '+CCID:' | awk -F': ' '{print $2}' | tr -d '\r\n ')" || true
             if [[ -n "${iccid:-}" ]]; then
                 LOG "ICCID detected via /dev/$port: $iccid"
                 break
@@ -79,7 +79,16 @@ detect_iccid() {
         systemctl start ModemManager 2>/dev/null || true
     fi
 
-    [[ -n "${iccid:-}" ]] || FAIL "Could not detect ICCID — check modem hardware and connectivity"
+    if [[ -z "${iccid:-}" ]]; then
+        # Already-provisioned devices only need ICCID for identity caching — don't let
+        # a dead modem block VCM_Update from running
+        if [[ -f "$SSH_KEY_FILE" ]]; then
+            LOG "WARNING: Could not detect ICCID — SSH key present, continuing without it"
+            ICCID=""
+            return 0
+        fi
+        FAIL "Could not detect ICCID — check modem hardware and connectivity"
+    fi
 
     if [[ -f "$ICCID_FILE" ]]; then
         local cached
