@@ -1,4 +1,5 @@
-v1.1.2 (unreleased)
+v1.1.2
+2026-09-24
 - install.sh: wait up to 2 minutes for running apt/dpkg processes before apt-get — Sixfab agent or unattended-upgrades may hold the lock (checks processes, since apt's fcntl locks are invisible to flock)
 - install.sh: restart the provisioning units instead of start — they are RemainAfterExit oneshots, so start was a no-op when they had already run that boot and re-running the installer did nothing; units currently mid-run are left alone
 - install.sh: --refresh mode reinstalls scripts/units from the existing checkout without apt, git or service changes (called by VCM_Update on every boot)
