@@ -13,6 +13,7 @@ v1.1.2 (unreleased)
 - vcm_deploy.sh: verify_networks skips interfaces that don't exist — on a device with no eth0, the failing `ip` pipeline killed the script under set -e with no log
 - install.sh: only follow logs when a controlling terminal exists — allows unattended runs (`vcm update`) to return instead of tailing journalctl forever
 - vcm-failure-reboot.service: only reboot devices without the deploy key — OnFailure also fires on a manual `systemctl stop` mid-run, and on already-provisioned devices a reboot only produced a reboot loop
+- vcm_modem_reconnect.sh: retire dhcpcd so NetworkManager is the only network manager — dhcpcd alongside NM grabbed wwan0 before ModemManager switched it to raw-ip, added duplicate wlan0 addresses, and removed NM's wlan0 default route (leaving LTE preferred over working WiFi). Disabled+masked only when NM manages every addressed interface, effective next boot; denyinterfaces wwan* added for the remainder of the current boot
 - vcm_modem_reconnect.sh: allow usbguard-blocked USB hub (0424:2514) and Quectel modem (2c7c:*) before probing the modem — VCM < v1.0.4 decal loop null-matches the hub against decals with empty hardware_id and blocks it, hiding the modem
 - install.sh: stop master.service and core-diagnostics.service before starting the provisioning chain so an old decal loop cannot re-block the hub mid-provision; vcm_update.sh restarts them
 

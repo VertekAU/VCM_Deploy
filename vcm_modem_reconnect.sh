@@ -31,6 +31,40 @@ if unblock_modem_path; then
     sleep 5
 fi
 
+# --- Single network manager: retire dhcpcd in favour of NetworkManager ---
+# Alongside NM, dhcpcd grabs wwan0 before MM switches it to raw-ip, and strips
+# NM's wlan0 default route (leaving LTE preferred over working WiFi). Retire it
+# only when NM owns every interface dhcpcd has addressed — otherwise a core whose
+# WiFi exists only in dhcpcd/wpa_supplicant config would lose WiFi on reboot.
+# Effective next boot: stopping it now pulls routes out from under live sessions.
+retire_dhcpcd() {
+    systemctl is-active --quiet NetworkManager || return 0
+    systemctl cat dhcpcd.service &>/dev/null || return 0
+    [[ "$(systemctl is-enabled dhcpcd 2>/dev/null)" == "masked" ]] && return 0
+
+    # Keep dhcpcd off the modem for whatever remains of this boot
+    if [[ -f /etc/dhcpcd.conf ]] && ! grep -q '^denyinterfaces wwan\*' /etc/dhcpcd.conf; then
+        echo 'denyinterfaces wwan*' >> /etc/dhcpcd.conf
+    fi
+
+    local iface state
+    for iface in eth0 wlan0; do
+        [[ -e "/sys/class/net/$iface" ]] || continue
+        ip -4 addr show "$iface" 2>/dev/null | grep -q 'inet ' || continue
+        # "connected (externally)" means NM is only observing — not good enough
+        state="$(nmcli -t -f DEVICE,STATE device 2>/dev/null | awk -F: -v d="$iface" '$1==d{print $2}')"
+        if [[ "$state" != "connected" ]]; then
+            LOG "Keeping dhcpcd — NetworkManager does not manage $iface (state: ${state:-unknown})"
+            return 0
+        fi
+    done
+
+    LOG "Retiring dhcpcd — NetworkManager manages all addressed interfaces (effective next boot)"
+    systemctl disable dhcpcd 2>/dev/null || true
+    systemctl mask dhcpcd 2>/dev/null || true
+}
+retire_dhcpcd
+
 # --- Path 1: Sixfab migration (fleet devices with Sixfab agent still present) ---
 if [[ -d /opt/sixfab ]]; then
     LOG "Sixfab detected, migration not done — running migration"
