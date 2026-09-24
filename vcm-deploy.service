@@ -1,7 +1,7 @@
 [Unit]
 Description=VCM Deploy — device provisioning and identity
 After=vcm-modem-reconnect.service
-# Reboot after all retries exhausted — device is unreachable without provisioning
+# Reboot on failure when unprovisioned — see condition in vcm-failure-reboot.service
 OnFailure=vcm-failure-reboot.service
 # 10 attempts at 30s intervals (~5 min) before entering failed state
 StartLimitBurst=10

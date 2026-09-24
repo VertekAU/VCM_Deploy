@@ -1,5 +1,10 @@
 [Unit]
-Description=Reboot after VCM provisioning failure — all retries exhausted
+Description=Reboot after VCM provisioning failure — unprovisioned devices only
+# Triggered via OnFailure= whenever vcm-deploy lands in failed state with no restart
+# pending — retries exhausted, but also a manual `systemctl stop` mid-run. Only an
+# unprovisioned device (no deploy key, no remote access) benefits from a reboot;
+# on a provisioned device it just creates a reboot loop.
+ConditionPathExists=!/home/pi/.ssh/vertekgithub
 
 [Service]
 Type=oneshot

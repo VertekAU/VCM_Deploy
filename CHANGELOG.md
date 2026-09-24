@@ -4,6 +4,7 @@ v1.1.2 (unreleased)
 - vcm_deploy.sh: fix silent exit in direct AT ICCID probe — a port with no +CCID response made grep return 1 and set -e killed the script before trying remaining ports or logging FATAL
 - vcm_deploy.sh: ICCID detection failure is non-fatal when the SSH deploy key is already present — ICCID is only needed for first provisioning, so a dead modem no longer blocks VCM_Update on already-provisioned devices
 - vcm_deploy.sh: verify_networks skips interfaces that don't exist — on a device with no eth0, the failing `ip` pipeline killed the script under set -e with no log
+- vcm-failure-reboot.service: only reboot devices without the deploy key — OnFailure also fires on a manual `systemctl stop` mid-run, and on already-provisioned devices a reboot only produced a reboot loop
 - vcm_modem_reconnect.sh: allow usbguard-blocked USB hub (0424:2514) and Quectel modem (2c7c:*) before probing the modem — VCM < v1.0.4 decal loop null-matches the hub against decals with empty hardware_id and blocks it, hiding the modem
 - install.sh: stop master.service and core-diagnostics.service before starting the provisioning chain so an old decal loop cannot re-block the hub mid-provision; vcm_update.sh restarts them
 
