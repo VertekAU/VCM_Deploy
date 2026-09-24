@@ -71,8 +71,10 @@ fi
 LOG "Installing QMI dependencies..."
 # Sixfab agent or unattended-upgrades may be mid-run. apt's locks are fcntl locks,
 # which flock(1) can't see, so wait on the processes instead.
+# One name per pgrep: it rejects patterns over 15 characters (process name limit)
+apt_busy() { local p; for p in apt apt-get dpkg unattended-upgr; do pgrep -x "$p" >/dev/null && return 0; done; return 1; }
 for _apt_wait in $(seq 1 24); do
-    pgrep -x 'apt|apt-get|dpkg|unattended-upgr' >/dev/null || break
+    apt_busy || break
     LOG "Waiting for another apt/dpkg process (attempt $_apt_wait/24)..."
     sleep 5
 done
