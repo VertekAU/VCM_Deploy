@@ -110,9 +110,10 @@ detect_iccid() {
 verify_networks() {
     local check_url="http://connectivitycheck.gstatic.com/generate_204"
     for iface in eth0 wlan0; do
+        [[ -e "/sys/class/net/$iface" ]] || continue
         local ip gw
-        ip="$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)"
-        gw="$(ip route show default dev "$iface" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')"
+        ip="$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)" || true
+        gw="$(ip route show default dev "$iface" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')" || true
         [[ -n "${ip:-}" && -n "${gw:-}" ]] || continue
 
         local code
