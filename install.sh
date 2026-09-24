@@ -116,8 +116,10 @@ LOG "Installation complete. Starting provisioning chain..."
 # they already ran this boot. A unit that is mid-run is left alone — interrupting
 # vcm-deploy can trip its OnFailure reboot on an unprovisioned device. Services are
 # systemd-managed, so they survive this terminal dying.
+CHAIN=(vcm-modem-reconnect.service vcm-deploy.service vcm-update.service)
+CHAIN_START="$(date '+%Y-%m-%d %H:%M:%S')"
 units=()
-for u in vcm-modem-reconnect.service vcm-deploy.service vcm-update.service; do
+for u in "${CHAIN[@]}"; do
     systemctl cat "$u" &>/dev/null || continue
     if [[ "$(systemctl show -p SubState --value "$u")" == "start" ]]; then
         LOG "$u is mid-run — leaving it (updated scripts apply on its next run)"
@@ -138,9 +140,66 @@ if ! (: > /dev/tty) 2>/dev/null; then
     LOG "Provisioning running (no terminal — not following logs)."
     exit 0
 fi
-LOG "Provisioning running. Following logs (Ctrl+C to detach — services continue)..."
+
+# A chain unit is busy while starting, waiting to restart, or with a queued job.
+# On a first install vcm-update doesn't exist yet — vcm-deploy installs and queues it.
+chain_busy() {
+    local u
+    for u in "${CHAIN[@]}"; do
+        systemctl cat "$u" &>/dev/null || continue
+        [[ "$(systemctl show -p ActiveState --value "$u")" == "activating" ]] && return 0
+        [[ -n "$(systemctl list-jobs --no-legend "$u" 2>/dev/null)" ]] && return 0
+    done
+    return 1
+}
+
+LOG "Provisioning running — following logs until it finishes (Ctrl+C to detach; services continue)..."
 LOG "If this shell drops (e.g. RPi Connect upgrade), reconnect and review with:"
 LOG "  cat $INSTALL_LOG; journalctl -b -u vcm-modem-reconnect -u vcm-deploy -u vcm-update"
-# exec replaces this shell with journalctl — Ctrl+C exits the log tail only,
-# services keep running as they are systemd-managed.
-exec journalctl -f -u vcm-modem-reconnect.service -u vcm-deploy.service -u vcm-update.service
+journalctl -f --since "$CHAIN_START" -u vcm-modem-reconnect.service -u vcm-deploy.service -u vcm-update.service &
+JOURNAL_PID=$!
+trap 'kill "$JOURNAL_PID" 2>/dev/null || true; echo; LOG "Detached — provisioning continues in the background."; exit 0' INT
+
+# Two idle checks in a row, so the hand-off between units isn't mistaken for the end
+idle=0
+for _ in $(seq 1 600); do   # 30-minute ceiling
+    if chain_busy; then idle=0; else idle=$((idle + 1)); fi
+    [[ "$idle" -ge 2 ]] && break
+    sleep 3
+done
+sleep 2   # let the last journal lines print
+kill "$JOURNAL_PID" 2>/dev/null || true
+wait "$JOURNAL_PID" 2>/dev/null || true
+trap - INT
+
+if [[ "$idle" -lt 2 ]]; then
+    LOG "Still running after 30 minutes — detaching. Check: systemctl status vcm-deploy vcm-update"
+    exit 0
+fi
+
+# master is started once vcm-update finishes
+for _ in $(seq 1 15); do
+    systemctl is-active --quiet master.service && break
+    sleep 1
+done
+
+echo
+summary=() failed=()
+for u in "${CHAIN[@]}"; do
+    systemctl cat "$u" &>/dev/null || continue
+    if [[ "$(systemctl show -p ActiveState --value "$u")" == "failed" ]]; then
+        summary+=("${u%.service} FAILED"); failed+=("$u")
+    else
+        summary+=("${u%.service} ok")
+    fi
+done
+if systemctl is-active --quiet master.service; then
+    summary+=("master running")
+else
+    summary+=("master NOT running"); failed+=(master.service)
+fi
+LOG "Finished: $(printf "%s, " "${summary[@]}" | sed "s/, $//")"
+if [[ "${#failed[@]}" -gt 0 ]]; then
+    LOG "Check: journalctl -b -u ${failed[*]}"
+    exit 1
+fi

@@ -1,3 +1,6 @@
+v1.1.3 (unreleased)
+- install.sh: follow the provisioning logs only until the chain finishes, then print a one-line result (each unit ok/FAILED, master running) and return to the prompt — previously it tailed the journal until Ctrl+C. Exits 1 if a unit failed or master is not running; Ctrl+C still detaches early; 30-minute ceiling
+
 v1.1.2
 2026-09-24
 - install.sh: wait up to 2 minutes for running apt/dpkg processes before apt-get — Sixfab agent or unattended-upgrades may hold the lock (checks processes, since apt's fcntl locks are invisible to flock)
