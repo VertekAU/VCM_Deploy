@@ -1,5 +1,12 @@
 v1.1.2 (unreleased)
-- install.sh: wait up to 2 minutes for apt lock before running apt-get — Sixfab agent may hold the lock mid-operation when masked but not yet stopped
+- install.sh: wait up to 2 minutes for running apt/dpkg processes before apt-get — Sixfab agent or unattended-upgrades may hold the lock (checks processes, since apt's fcntl locks are invisible to flock)
+- install.sh: restart the provisioning units instead of start — they are RemainAfterExit oneshots, so start was a no-op when they had already run that boot and re-running the installer did nothing; units currently mid-run are left alone
+- install.sh: --refresh mode reinstalls scripts/units from the existing checkout without apt, git or service changes (called by VCM_Update on every boot)
+- install.sh: scripts replaced via atomic rename so a copy currently executing is not corrupted mid-run
+- install.sh: full run logged to /var/log/vcm-install.log (persists across the shell dropping or a reboot, unlike /tmp)
+- vcm_deploy.sh: always run VCM_Update install.sh (idempotent) — previously only after a fresh clone, so a run that died between clone and install left vcm-update.service missing permanently
+- vcm_deploy.sh: validate an existing SSH key with git ls-remote; if GitHub rejects it (e.g. legacy deploy_core.sh key) move it aside and re-provision from the API
+- vcm_deploy.sh: fleet password, hostnamectl and route re-add failures are logged instead of killing the script under set -e
 - install.sh: run dpkg --configure -a before apt-get — a previously interrupted apt run leaves packages half-configured and apt-get install refuses to proceed
 - vcm_deploy.sh: fix silent exit in direct AT ICCID probe — a port with no +CCID response made grep return 1 and set -e killed the script before trying remaining ports or logging FATAL
 - vcm_deploy.sh: ICCID detection failure is non-fatal when the SSH deploy key is already present — ICCID is only needed for first provisioning, so a dead modem no longer blocks VCM_Update on already-provisioned devices
