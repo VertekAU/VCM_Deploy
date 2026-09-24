@@ -92,6 +92,13 @@ LOG "Installation complete. Starting provisioning chain..."
 # systemd services so they survive terminal death (e.g. Sixfab agent killed
 # during Sixfab removal).
 systemctl start --no-block vcm-modem-reconnect.service vcm-deploy.service
+
+# Unattended runs (`vcm update` from cron/master) have no controlling terminal —
+# following logs there would never return.
+if ! (: > /dev/tty) 2>/dev/null; then
+    LOG "Provisioning running (no terminal — not following logs)."
+    exit 0
+fi
 LOG "Provisioning running. Following logs (Ctrl+C to detach — services continue)..."
 # exec replaces this shell with journalctl — Ctrl+C exits the log tail only,
 # services keep running as they are systemd-managed.
