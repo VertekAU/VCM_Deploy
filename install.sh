@@ -46,6 +46,18 @@ exec 3>&1 4>&2
 exec > >(tee -a "$INSTALL_LOG") 2>&1
 LOG "=== VCM_Deploy install (log: $INSTALL_LOG) ==="
 
+# Ctrl+C before the provisioning chain starts cancels the update. Put back anything
+# this run stopped, and say so (the later detach trap replaces this one).
+STOPPED_SVCS=()
+on_cancel() {
+    local s
+    for s in "${STOPPED_SVCS[@]}"; do systemctl start --no-block "$s" 2>/dev/null || true; done
+    echo
+    LOG "Update cancelled before provisioning started — nothing was restarted. Run again to update."
+    exit 130
+}
+trap on_cancel INT
+
 # If repo already exists, default to its current branch so re-runs stay on the same branch.
 # VCM_BRANCH overrides everything; fresh clone defaults to main.
 BRANCH="${VCM_BRANCH:-$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}"
@@ -108,6 +120,7 @@ for svc in master.service core-diagnostics.service; do
     if systemctl is-active --quiet "$svc"; then
         LOG "Stopping $svc for provisioning..."
         systemctl stop "$svc" || true
+        STOPPED_SVCS+=("$svc")
     fi
 done
 
@@ -130,6 +143,8 @@ done
 if [[ "${#units[@]}" -gt 0 ]]; then
     systemctl restart --no-block "${units[@]}" || LOG "WARNING: failed to queue restart of ${units[*]}"
 fi
+# From here the chain runs under systemd — Ctrl+C only detaches
+trap 'echo; LOG "Detached — provisioning continues in the background."; exit 0' INT
 
 # Stop teeing before following — journal lines don't belong in the install log
 exec 1>&3 2>&4 3>&- 4>&-
