@@ -43,7 +43,9 @@ fi
 # Persist the full run — the remote shell can drop mid-install (RPi Connect
 # upgrade, reboot) and /tmp is cleared on boot.
 exec 3>&1 4>&2
-exec > >(tee -a "$INSTALL_LOG") 2>&1
+# tee ignores Ctrl+C: otherwise it dies with everything else in the process group and
+# the cancel handler's message is lost (SIGPIPE kills the installer mid-handler)
+exec > >(trap '' INT; exec tee -a "$INSTALL_LOG") 2>&1
 LOG "=== VCM_Deploy install (log: $INSTALL_LOG) ==="
 
 # Ctrl+C before the provisioning chain starts cancels the update. Put back anything
