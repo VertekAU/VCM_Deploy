@@ -146,7 +146,7 @@ if [[ "${#units[@]}" -gt 0 ]]; then
     systemctl restart --no-block "${units[@]}" || LOG "WARNING: failed to queue restart of ${units[*]}"
 fi
 # From here the chain runs under systemd — Ctrl+C only detaches
-trap 'echo; LOG "Detached — provisioning continues in the background."; exit 0' INT
+trap 'echo; LOG "Detached — provisioning continues in the background."; exit 3' INT
 
 # Stop teeing before following — journal lines don't belong in the install log
 exec 1>&3 2>&4 3>&- 4>&-
@@ -175,7 +175,7 @@ LOG "If this shell drops (e.g. RPi Connect upgrade), reconnect and review with:"
 LOG "  cat $INSTALL_LOG; journalctl -b -u vcm-modem-reconnect -u vcm-deploy -u vcm-update"
 journalctl -f --since "$CHAIN_START" -u vcm-modem-reconnect.service -u vcm-deploy.service -u vcm-update.service &
 JOURNAL_PID=$!
-trap 'kill "$JOURNAL_PID" 2>/dev/null || true; echo; LOG "Detached — provisioning continues in the background."; exit 0' INT
+trap 'kill "$JOURNAL_PID" 2>/dev/null || true; echo; LOG "Detached — provisioning continues in the background."; exit 3' INT
 
 # Two idle checks in a row, so the hand-off between units isn't mistaken for the end
 idle=0
@@ -191,7 +191,7 @@ trap - INT
 
 if [[ "$idle" -lt 2 ]]; then
     LOG "Still running after 30 minutes — detaching. Check: systemctl status vcm-deploy vcm-update"
-    exit 0
+    exit 3
 fi
 
 # master is started once vcm-update finishes

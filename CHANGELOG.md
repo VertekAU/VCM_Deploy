@@ -1,4 +1,5 @@
 v1.1.3 (unreleased)
+- install.sh: detaching (Ctrl+C after provisioning starts, or the 30-minute ceiling) exits with code 3 so 'vcm update full' can tell a detach from a finished run
 - install.sh: Ctrl+C before the provisioning chain starts now reports the update was cancelled (and restarts master/core-diagnostics if this run had stopped them); after the chain is queued, Ctrl+C only detaches. The install-log tee ignores Ctrl+C — previously it died with the process group and the cancel message was lost (installer killed by SIGPIPE)
 - install.sh: follow the provisioning logs only until the chain finishes, then print a one-line result (each unit ok/FAILED, master running) and return to the prompt — previously it tailed the journal until Ctrl+C. Exits 1 if a unit failed or master is not running; Ctrl+C still detaches early; 30-minute ceiling
 
