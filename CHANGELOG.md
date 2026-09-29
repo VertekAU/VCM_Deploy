@@ -1,4 +1,5 @@
-v1.1.4 (unreleased)
+v1.1.4
+2026-09-29
 - install.sh: flag the provisioning run as a full update (/run/vertek/patch-now) so VCM_Update v1.1.4+ applies the Patch Tuesday package upgrades now rather than waiting for Tuesday
 
 v1.1.3
