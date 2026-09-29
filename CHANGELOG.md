@@ -1,3 +1,6 @@
+v1.1.4 (unreleased)
+- install.sh: flag the provisioning run as a full update (/run/vertek/patch-now) so VCM_Update v1.1.4+ applies the Patch Tuesday package upgrades now rather than waiting for Tuesday
+
 v1.1.3
 2026-09-29
 - install.sh: detaching (Ctrl+C after provisioning starts, or the 30-minute ceiling) exits with code 3 so 'vcm update full' can tell a detach from a finished run

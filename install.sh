@@ -142,6 +142,12 @@ for u in "${CHAIN[@]}"; do
     fi
     units+=("$u")
 done
+# A person ran this, so vcm_update applies the Patch Tuesday package upgrades now
+# rather than waiting for Tuesday. /run is cleared on reboot, so the flag can't
+# outlive this run into a later unattended boot.
+if [[ " ${units[*]} " == *" vcm-update.service "* ]]; then
+    mkdir -p /run/vertek && touch /run/vertek/patch-now
+fi
 if [[ "${#units[@]}" -gt 0 ]]; then
     systemctl restart --no-block "${units[@]}" || LOG "WARNING: failed to queue restart of ${units[*]}"
 fi
