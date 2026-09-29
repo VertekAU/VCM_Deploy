@@ -1,3 +1,7 @@
+v1.1.5 (unreleased)
+- install.sh, vcm_modem_migrate.sh: stop installing udhcpc and busybox — vestigial from the old QMI/Sixfab setup; NetworkManager + ModemManager own LTE and nothing calls udhcpc. Existing installs are left in place (busybox may be used by initramfs-tools)
+- install.sh: usage comments use curl -fsSL (fail on HTTP errors instead of piping an error page to bash)
+
 v1.1.4
 2026-09-29
 - install.sh: flag the provisioning run as a full update (/run/vertek/patch-now) so VCM_Update v1.1.4+ applies the Patch Tuesday package upgrades now rather than waiting for Tuesday

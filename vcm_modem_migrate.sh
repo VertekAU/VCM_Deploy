@@ -20,7 +20,7 @@ systemctl daemon-reload 2>/dev/null || true
 # is no internet for apt-get until LTE is fully set up.
 LOG "Installing QMI dependencies..."
 apt-get update -qq
-apt-get install -y --no-upgrade libqmi-utils udhcpc busybox modemmanager
+apt-get install -y --no-upgrade libqmi-utils modemmanager
 
 # Run Sixfab's own uninstaller — services are already masked so it cannot
 # restart them. ECM internet is still available for the download.

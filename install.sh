@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # VCM_Deploy installer
-# Production: curl -sS https://raw.githubusercontent.com/VertekAU/VCM_Deploy/main/install.sh | sudo bash
-# Dev branch: curl -sS https://raw.githubusercontent.com/VertekAU/VCM_Deploy/dev/install.sh | sudo VCM_BRANCH=dev bash
+# Production: curl -fsSL https://raw.githubusercontent.com/VertekAU/VCM_Deploy/main/install.sh | sudo bash
+# Dev branch: curl -fsSL https://raw.githubusercontent.com/VertekAU/VCM_Deploy/dev/install.sh | sudo VCM_BRANCH=dev bash
 # --refresh:  reinstall scripts/units from the existing checkout only — no apt, git,
 #             or service stops/starts. Run by vcm_update.sh on every boot.
 set -euo pipefail
@@ -99,7 +99,7 @@ DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confold \
 DEBIAN_FRONTEND=noninteractive apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade \
     -o Dpkg::Options::="--force-confold" \
-    git libqmi-utils udhcpc busybox modemmanager
+    git libqmi-utils modemmanager
 
 # Clone or update VCM_Deploy repo
 if [[ -d "$INSTALL_DIR/.git" ]]; then
