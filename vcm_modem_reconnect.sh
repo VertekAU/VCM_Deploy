@@ -189,20 +189,10 @@ for i in $(seq 1 30); do
     sleep 2
 done
 
-# --- Wait for LTE registration (up to 60s) ---
-LOG "Waiting for LTE registration..."
-for i in $(seq 1 30); do
-    state="$(mmcli -m "$MODEM_IDX" --output-keyvalue 2>/dev/null \
-        | grep 'modem.generic.state[[:space:]]' | awk -F': ' '{print $NF}' | tr -d ' ')"
-    if [[ "$state" == "registered" || "$state" == "connected" ]]; then
-        LOG "LTE registered (state: $state)"
-        break
-    fi
-    [[ "$i" -eq 30 ]] && { LOG "No LTE registration after 60s — wlan0 sufficient, continuing"; exit 0; }
-    sleep 2
-done
-
 # --- Ensure NM GSM connection profile exists ---
+# Before the registration wait: with autoconnect, NM brings LTE up by itself once
+# the modem registers. Created after the wait, a weak-signal site that misses the
+# 60s window never gets a profile, and LTE stays down even when signal returns.
 _profile_just_created=0
 if ! nmcli connection show "$NM_CONN_NAME" &>/dev/null; then
     LOG "Creating NM connection profile '$NM_CONN_NAME'..."
@@ -217,6 +207,19 @@ if ! nmcli connection show "$NM_CONN_NAME" &>/dev/null; then
         || { LOG "Failed to create NM profile — wlan0 sufficient, continuing"; exit 0; }
     _profile_just_created=1
 fi
+
+# --- Wait for LTE registration (up to 60s) ---
+LOG "Waiting for LTE registration..."
+for i in $(seq 1 30); do
+    state="$(mmcli -m "$MODEM_IDX" --output-keyvalue 2>/dev/null \
+        | grep 'modem.generic.state[[:space:]]' | awk -F': ' '{print $NF}' | tr -d ' ')"
+    if [[ "$state" == "registered" || "$state" == "connected" ]]; then
+        LOG "LTE registered (state: $state)"
+        break
+    fi
+    [[ "$i" -eq 30 ]] && { LOG "No LTE registration after 60s — '$NM_CONN_NAME' will connect when the modem registers; wlan0 sufficient, continuing"; exit 0; }
+    sleep 2
+done
 
 # After profile creation NM fires autoconnect immediately. Wait for that attempt
 # to settle (leave "activating" state) before we check IP or call connection up —

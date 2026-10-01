@@ -1,4 +1,5 @@
 v1.1.5 (unreleased)
+- vcm_modem_reconnect.sh: create the vertek-lte NetworkManager profile before waiting for LTE registration — it was only created after a successful 60s wait, so a core that couldn't register at boot (weak signal) was left with no profile and LTE never came up even once signal returned (seen on Bullseye Birdies after migration). With autoconnect, NM now connects whenever the modem registers
 - install.sh, vcm_modem_migrate.sh: stop installing udhcpc and busybox — vestigial from the old QMI/Sixfab setup; NetworkManager + ModemManager own LTE and nothing calls udhcpc. Existing installs are left in place (busybox may be used by initramfs-tools)
 - install.sh: usage comments use curl -fsSL (fail on HTTP errors instead of piping an error page to bash)
 
