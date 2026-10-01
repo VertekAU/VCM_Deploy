@@ -23,15 +23,17 @@ INSTALL_LOG="/var/log/vcm-install.log"
 # reading its original file (bash reads scripts incrementally).
 install_files() {
     local f
-    for f in vcm_modem_migrate.sh vcm_modem_reconnect.sh vcm_deploy.sh; do
+    for f in vcm_modem_migrate.sh vcm_modem_reconnect.sh vcm_deploy.sh vcm_lte_watchdog.sh; do
         install -m 0755 -o root -g root "$INSTALL_DIR/$f" "$SBIN/.$f.new"
         mv -f "$SBIN/.$f.new" "$SBIN/$f"
     done
-    for f in vcm-modem-reconnect.service vcm-deploy.service vcm-failure-reboot.service; do
+    for f in vcm-modem-reconnect.service vcm-deploy.service vcm-failure-reboot.service \
+             vcm-lte-watchdog.service vcm-lte-watchdog.timer; do
         install -m 0644 -o root -g root "$INSTALL_DIR/$f" "$SYSTEMD/$f"
     done
     systemctl daemon-reload
-    systemctl enable vcm-modem-reconnect.service vcm-deploy.service
+    # The watchdog timer starts with the next boot (a full install also starts it now)
+    systemctl enable vcm-modem-reconnect.service vcm-deploy.service vcm-lte-watchdog.timer
 }
 
 if [[ "$REFRESH" -eq 1 ]]; then
@@ -151,6 +153,8 @@ fi
 if [[ "${#units[@]}" -gt 0 ]]; then
     systemctl restart --no-block "${units[@]}" || LOG "WARNING: failed to queue restart of ${units[*]}"
 fi
+# Its checks skip while the chain above runs
+systemctl start vcm-lte-watchdog.timer || LOG "WARNING: failed to start the LTE watchdog timer"
 # From here the chain runs under systemd — Ctrl+C only detaches
 trap 'echo; LOG "Detached — provisioning continues in the background."; exit 3' INT
 

@@ -1,0 +1,10 @@
+[Unit]
+Description=Check LTE every 15 minutes (VCM LTE watchdog)
+
+[Timer]
+# Boot provisioning sets LTE up first; checks start once it has had time to finish
+OnBootSec=10min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target

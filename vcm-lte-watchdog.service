@@ -1,0 +1,11 @@
+[Unit]
+Description=VCM LTE watchdog — recover LTE that didn't come back by itself
+After=vcm-modem-reconnect.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vcm_lte_watchdog.sh
+# A recovery re-runs vcm-modem-reconnect, which can take up to 10 minutes
+TimeoutStartSec=900
+StandardOutput=journal
+StandardError=journal
