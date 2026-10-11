@@ -65,6 +65,32 @@ retire_dhcpcd() {
 }
 retire_dhcpcd
 
+# --- Remove the April QMI tooling (Sixfab-Removal-and-QMI-Flip) ---
+# Its boot service brought LTE up before NM/MM managed the modem. Now it races
+# NM at boot: if wwan0 has no address yet it opens its own qmicli data session
+# and runs udhcpc under NM's feet, knocking NM's activation over. Superseded by
+# this script (migration + flip) and NM/MM. A copy running right now finishes
+# from its open file; from the next boot it's gone.
+remove_legacy_qmi_tooling() {
+    local unit script removed=0
+    for unit in vcm-qmi-reconnect.service vcm-migrate-sixfab-ecm-to-qmi.service; do
+        [[ -f "/etc/systemd/system/$unit" ]] || continue
+        systemctl disable "$unit" 2>/dev/null || true
+        rm -f "/etc/systemd/system/$unit"
+        removed=1
+    done
+    for script in vcm_qmi_reconnect.sh vcm_migrate_sixfab_ecm_to_qmi.sh; do
+        [[ -f "/usr/local/sbin/$script" ]] || continue
+        rm -f "/usr/local/sbin/$script"
+        removed=1
+    done
+    if [[ "$removed" -eq 1 ]]; then
+        systemctl daemon-reload 2>/dev/null || true
+        LOG "Removed legacy QMI reconnect/migration services (superseded by NetworkManager/ModemManager)"
+    fi
+}
+remove_legacy_qmi_tooling
+
 # --- Path 1: Sixfab migration (fleet devices with Sixfab agent still present) ---
 if [[ -d /opt/sixfab ]]; then
     LOG "Sixfab detected, migration not done — running migration"
