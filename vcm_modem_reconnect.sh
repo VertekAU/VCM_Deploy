@@ -229,9 +229,18 @@ if ! nmcli connection show "$NM_CONN_NAME" &>/dev/null; then
         gsm.apn "$LTE_APN" \
         connection.autoconnect yes \
         ipv4.route-metric 700 \
-        ipv6.route-metric 700 2>/dev/null \
+        ipv6.method disabled 2>/dev/null \
         || { LOG "Failed to create NM profile — wlan0 sufficient, continuing"; exit 0; }
     _profile_just_created=1
+fi
+
+# IPv4 only: with IPv6 on, NM asks for a dual-stack data call and the network
+# refuses the IPv6 half on every connect (pdn-ipv6-call-disallowed). Existing
+# profiles pick this up at their next activation — the live connection is untouched.
+if [[ "$(nmcli -g ipv6.method connection show "$NM_CONN_NAME" 2>/dev/null)" != "disabled" ]]; then
+    nmcli connection modify "$NM_CONN_NAME" ipv6.method disabled 2>/dev/null \
+        && LOG "LTE profile set to IPv4 only (applies from its next connection)" \
+        || LOG "WARNING: could not set LTE profile to IPv4 only"
 fi
 
 # --- Wait for LTE registration (up to 60s) ---
