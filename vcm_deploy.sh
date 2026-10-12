@@ -231,6 +231,35 @@ EOF
     fi
 }
 
+# An update cut off mid-pull (power loss) can leave ORIG_HEAD empty;
+# git then refuses every later pull ("cannot lock ref 'ORIG_HEAD': reference
+# broken") and the core silently stops updating. It is a scratch ref git
+# rewrites on every pull, so a broken one is safe to delete.
+repair_scratch_refs() {
+    local dir="$1" ref
+    for ref in ORIG_HEAD; do
+        [[ -f "$dir/.git/$ref" ]] || continue
+        sudo -u "$PI_USER" git -C "$dir" rev-parse -q --verify "$ref" >/dev/null 2>&1 && continue
+        rm -f "$dir/.git/$ref"
+        LOG "Removed broken $ref in $dir (left by an interrupted update)"
+    done
+}
+
+# Pull as pi with a few retries (site internet can drop for seconds at a time);
+# on failure, log git's own error rather than hiding it
+git_pull() {
+    local dir="$1" name="$2" out="" attempt
+    repair_scratch_refs "$dir"
+    for attempt in 1 2 3; do
+        out="$(GIT_SSH_COMMAND="$GIT_SSH" sudo -u "$PI_USER" git -C "$dir" pull --ff-only -q 2>&1)" && return 0
+        [[ "$attempt" -lt 3 ]] && sleep 10
+    done
+    local why
+    why="$(grep -m1 -E "^(fatal|error|ssh):" <<<"$out" || tail -1 <<<"$out")"
+    LOG "$name pull failed — continuing with existing code: $why"
+    return 1
+}
+
 # --- VCM_Update: clone or pull, (re)install its unit ---
 setup_vcm_update() {
     # If VCM_Update has a partial .git (mid-clone power loss), remove so we re-clone cleanly
@@ -247,9 +276,7 @@ setup_vcm_update() {
         chown -R "$PI_USER:$PI_USER" "$VCM_UPDATE_DIR"
     else
         LOG "Pulling VCM_Update..."
-        GIT_SSH_COMMAND="$GIT_SSH" sudo -u "$PI_USER" \
-            git -C "$VCM_UPDATE_DIR" pull --ff-only 2>/dev/null \
-            || LOG "VCM_Update pull failed — continuing with existing code"
+        git_pull "$VCM_UPDATE_DIR" VCM_Update || true
     fi
 
     # Always (re)install — install.sh is idempotent, and a run that died between

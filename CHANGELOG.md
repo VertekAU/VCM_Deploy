@@ -1,3 +1,8 @@
+v1.1.6 (unreleased)
+- vcm_deploy.sh, install.sh: remove a broken ORIG_HEAD before pulling — an update cut off mid-pull (power loss) leaves it empty and git then refuses every later pull ('cannot lock ref ORIG_HEAD: reference broken'); ArchiveBB had silently stopped updating on 24 June this way
+- vcm_deploy.sh: VCM_Update pull retries 3 times 10 s apart (site internet can drop for seconds) and logs git's actual error instead of discarding it
+- install.sh: the final summary reports failed repo pulls ('N repo pull(s) FAILED — still on old code') and exits 1, instead of 'ok' while the core stays on old code
+
 v1.1.5
 2026-10-12
 - vcm_modem_reconnect.sh: LTE profile is IPv4 only (ipv6.method disabled), on new and existing profiles — NM asked for a dual-stack data call and the network refused the IPv6 half on every connect (pdn-ipv6-call-disallowed); the old QMI script only ever asked for IPv4. Existing profiles pick it up at their next connection; the modem's attach settings are unchanged

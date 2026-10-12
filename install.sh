@@ -103,9 +103,23 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade \
     -o Dpkg::Options::="--force-confold" \
     git libqmi-utils modemmanager
 
+# An update cut off mid-pull (power loss) can leave ORIG_HEAD empty;
+# git then refuses every later pull. It is a scratch ref git rewrites, so a
+# broken one is safe to delete.
+repair_scratch_refs() {
+    local dir="$1" ref
+    for ref in ORIG_HEAD; do
+        [[ -f "$dir/.git/$ref" ]] || continue
+        git -c safe.directory='*' -C "$dir" rev-parse -q --verify "$ref" >/dev/null 2>&1 && continue
+        rm -f "$dir/.git/$ref"
+        LOG "Removed broken $ref in $dir (left by an interrupted update)"
+    done
+}
+
 # Clone or update VCM_Deploy repo
 if [[ -d "$INSTALL_DIR/.git" ]]; then
     LOG "Updating existing VCM_Deploy at $INSTALL_DIR (branch: $BRANCH)"
+    repair_scratch_refs "$INSTALL_DIR"
     git -C "$INSTALL_DIR" fetch origin
     git -C "$INSTALL_DIR" checkout "$BRANCH"
     git -C "$INSTALL_DIR" pull --ff-only
@@ -224,6 +238,13 @@ if systemctl is-active --quiet master.service; then
     summary+=("master running")
 else
     summary+=("master NOT running"); failed+=(master.service)
+fi
+# A failed pull leaves the unit "ok" but the core on old code — say so
+pull_failures="$(journalctl --since "$CHAIN_START" -u vcm-deploy.service -u vcm-update.service -o cat 2>/dev/null \
+    | grep -c 'pull failed' || true)"
+if [[ "${pull_failures:-0}" -gt 0 ]]; then
+    summary+=("$pull_failures repo pull(s) FAILED — still on old code")
+    failed+=(vcm-deploy.service vcm-update.service)
 fi
 LOG "Finished: $(printf "%s, " "${summary[@]}" | sed "s/, $//")"
 if [[ "${#failed[@]}" -gt 0 ]]; then
