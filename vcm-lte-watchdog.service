@@ -9,3 +9,7 @@ ExecStart=/usr/local/sbin/vcm_lte_watchdog.sh
 TimeoutStartSec=900
 StandardOutput=journal
 StandardError=journal
+# Runs 720 times a day: keep systemd's start/finish lines out of the journal,
+# but record the watchdog's own messages (logged at notice)
+SyslogLevel=notice
+LogLevelMax=notice

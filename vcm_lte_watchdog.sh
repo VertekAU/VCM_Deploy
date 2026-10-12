@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VCM LTE watchdog — run every 15 minutes by vcm-lte-watchdog.timer.
+# VCM LTE watchdog — run every 2 minutes by vcm-lte-watchdog.timer.
 #
 # vcm_modem_reconnect.sh sets LTE up once, at boot. If the modem only registers
 # later (SIM re-enabled, signal back) and the data connection won't come up by
@@ -20,7 +20,7 @@ CHAIN=(vcm-modem-reconnect.service vcm-deploy.service vcm-update.service)
 
 mkdir -p "$STATE_DIR"
 
-# The timer fires 96 times a day — log a status only when it changes
+# The timer fires 720 times a day — log a status only when it changes
 note() {
     local status="$1"; shift
     [[ "$(cat "$STATUS_FILE" 2>/dev/null)" == "$status" ]] || LOG "$*"
@@ -77,7 +77,7 @@ case "$modem_state" in
 esac
 
 # Back off after failed attempts — a SIM that registers but is refused data
-# (e.g. plan exhausted) would otherwise reset the modem every 15 minutes
+# (e.g. plan exhausted) would otherwise reset the modem every 2 minutes
 # Wait after N failed attempts: 30, 60, 120, then 240 minutes
 backoff_min() { local n=$(( $1 > 5 ? 5 : $1 )) m; m=$(( 15 << n )); echo $(( m > BACKOFF_MAX_MIN ? BACKOFF_MAX_MIN : m )); }
 fails=0; last=0
