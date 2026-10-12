@@ -69,7 +69,7 @@ case "$modem_state" in
     "")                   reason="ModemManager isn't reporting the modem" ;;
     *)
         if [[ "$has_profile" -eq 1 ]]; then
-            note "waiting:$modem_state" "LTE down — modem not registered (state: $modem_state); '$NM_CONN_NAME' connects once it registers"
+            note waiting "LTE down — modem not registered (state: $modem_state); '$NM_CONN_NAME' connects once it registers"
             exit 0
         fi
         reason="no '$NM_CONN_NAME' profile (modem state: $modem_state)"

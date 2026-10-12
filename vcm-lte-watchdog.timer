@@ -2,8 +2,9 @@
 Description=Check LTE every 2 minutes (VCM LTE watchdog)
 
 [Timer]
-# Boot provisioning sets LTE up first; checks start once it has had time to finish
-OnBootSec=5min
+# Same cadence from boot: the watchdog skips while boot provisioning is still running,
+# and brings LTE up itself even while NetworkManager is pausing its own retries
+OnBootSec=2min
 # When the modem drops out while the Pi stays up (modem glitch, carrier detach),
 # NetworkManager spends its retries in about a second and then waits 5 minutes;
 # a frequent check brings LTE back soon after the modem registers again
