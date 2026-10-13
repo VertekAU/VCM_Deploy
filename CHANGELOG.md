@@ -1,4 +1,5 @@
-v1.1.6 (unreleased)
+v1.1.6
+2026-10-13
 - vcm_deploy.sh, install.sh: remove a broken ORIG_HEAD before pulling — an update cut off mid-pull (power loss) leaves it empty and git then refuses every later pull ('cannot lock ref ORIG_HEAD: reference broken'); ArchiveBB had silently stopped updating on 24 June this way
 - vcm_deploy.sh: VCM_Update pull retries 3 times 10 s apart (site internet can drop for seconds) and logs git's actual error instead of discarding it
 - install.sh: the final summary reports failed repo pulls ('N repo pull(s) FAILED — still on old code') and exits 1, instead of 'ok' while the core stays on old code; its "Check:" hint now puts -u before each unit (journalctl rejected the old form when more than one unit failed)
