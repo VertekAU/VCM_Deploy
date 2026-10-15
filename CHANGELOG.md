@@ -1,3 +1,9 @@
+v1.1.7 (unreleased)
+- vcm_deploy.sh: the boot-time Wi-Fi/Ethernet check only demotes an interface whose data path is dead. The HTTP check now retries 3 times; if it still fails but the interface can ping 1.1.1.1/8.8.8.8, the failure is DNS or web filtering and the interface stays preferred. Previously one failed check demoted Wi-Fi to metric 800, and on sites whose DNS servers sit behind the router on another subnet (Carina) DNS queries then left over LTE and died — CORE05 dropped off the internet after a single failed check during a full update
+- vcm_deploy.sh: when an interface is demoted, its off-subnet DNS servers keep a host route through its gateway so name resolution keeps working
+- vcm_deploy.sh: fix the doubled HTTP code in the check's log ('000000')
+- install.sh: the summary's journalctl hint lists each failed unit once
+
 v1.1.6
 2026-10-13
 - vcm_deploy.sh, install.sh: remove a broken ORIG_HEAD before pulling — an update cut off mid-pull (power loss) leaves it empty and git then refuses every later pull ('cannot lock ref ORIG_HEAD: reference broken'); ArchiveBB had silently stopped updating on 24 June this way

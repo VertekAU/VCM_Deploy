@@ -105,8 +105,35 @@ detect_iccid() {
 }
 
 # --- Network Quality Verification ---
-# Raises the route metric on any wired/WiFi interface that has an IP but fails
-# internet reachability, so the LTE modem (metric 700) takes precedence.
+# Raises the route metric on any wired/WiFi interface that has an IP but no working
+# internet path, so the LTE modem (metric 700) takes precedence.
+#
+# Only a dead data path demotes. The HTTP check also needs DNS, and demoting can never
+# fix DNS: on sites whose DNS servers sit behind the router on another subnet (Carina),
+# a demoted Wi-Fi sends DNS queries out over LTE where those private addresses don't
+# exist, so DNS dies entirely and the core drops off the internet (CORE05, 2026-10-15,
+# after one failed check during a full update).
+
+# Internet reachable through this interface at the IP level — no DNS involved
+ip_path_ok() {
+    local iface="$1" target
+    for target in 1.1.1.1 8.8.8.8; do
+        ping -I "$iface" -c 2 -W 3 -q "$target" >/dev/null 2>&1 && return 0
+    done
+    return 1
+}
+
+# A demoted interface's DNS servers that aren't on its local subnet would otherwise
+# follow the LTE default route — keep them reachable through the interface's gateway
+keep_dns_reachable() {
+    local iface="$1" gw="$2" dns
+    for dns in $(nmcli -g IP4.DNS device show "$iface" 2>/dev/null | tr '|' ' '); do
+        ip -4 route get "$dns" oif "$iface" 2>/dev/null | grep -q " via " || continue   # on-link
+        ip route replace "$dns/32" via "$gw" dev "$iface" \
+            && LOG "Keeping $iface DNS server $dns reachable via $gw"
+    done
+}
+
 verify_networks() {
     local check_url="http://connectivitycheck.gstatic.com/generate_204"
     for iface in eth0 wlan0; do
@@ -116,15 +143,25 @@ verify_networks() {
         gw="$(ip route show default dev "$iface" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')" || true
         [[ -n "${ip:-}" && -n "${gw:-}" ]] || continue
 
-        local code
-        code="$(curl -s --max-time 5 --interface "$iface" -o /dev/null -w "%{http_code}" "$check_url" 2>/dev/null || echo "000")"
+        # A few tries — one blip shouldn't move a core onto LTE
+        local code="" attempt
+        for attempt in 1 2 3; do
+            code="$(curl -s --max-time 5 --interface "$iface" -o /dev/null -w "%{http_code}" "$check_url" 2>/dev/null)" || true
+            [[ "$code" == "204" ]] && break
+            [[ "$attempt" -lt 3 ]] && sleep 3
+        done
+        code="${code:-000}"
+
         if [[ "$code" == "204" ]]; then
             LOG "$iface ($ip) connectivity OK"
+        elif ip_path_ok "$iface"; then
+            LOG "$iface ($ip) reaches the internet but the HTTP check failed (HTTP $code) — DNS or web filtering, not a dead link; keeping $iface preferred"
         else
-            LOG "$iface ($ip) has route but failed connectivity check (HTTP $code) — raising metric to 800"
+            LOG "$iface ($ip) has no working internet path (HTTP $code, no ping) — raising metric to 800"
             ip route del default dev "$iface" 2>/dev/null || true
             ip route add default via "$gw" dev "$iface" metric 800 \
                 || LOG "WARNING: could not re-add $iface default route at metric 800"
+            keep_dns_reachable "$iface" "$gw"
         fi
     done
 }

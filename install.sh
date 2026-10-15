@@ -248,6 +248,6 @@ if [[ "${pull_failures:-0}" -gt 0 ]]; then
 fi
 LOG "Finished: $(printf "%s, " "${summary[@]}" | sed "s/, $//")"
 if [[ "${#failed[@]}" -gt 0 ]]; then
-    LOG "Check: journalctl -b $(printf -- "-u %s " "${failed[@]}")"
+    LOG "Check: journalctl -b $(printf -- "-u %s " $(printf '%s\n' "${failed[@]}" | sort -u))"
     exit 1
 fi
