@@ -13,7 +13,7 @@ VCM_UPDATE_DIR="/home/pi/vcm_update"
 VCM_UPDATE_REPO="git@github.com:VertekAU/VCM_Update.git"
 PROVISIONING_URL="https://ywnjbeqoowlqyngmzkpc.supabase.co/functions/v1/rpi-connect-provisioning"
 PI_USER="pi"
-GIT_SSH="ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
+GIT_SSH="ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o ConnectTimeout=15"   # host keys: pinned via ~/.ssh/config
 
 mkdir -p "$VERTEK_DIR"
 chmod 755 "$VERTEK_DIR"
@@ -151,23 +151,41 @@ verify_networks() {
 # provisioning) so existing cores pick it up; a core on a port-22-blocked site gets
 # this script via VCM_Update's nightly VCM_Deploy refresh (HTTPS), then pulls over 443.
 # ConnectTimeout keeps a blocked attempt from hanging ~2 minutes (each pull retries).
+#
+# GitHub's published host keys (api.github.com/meta, checked against ssh.github.com:443
+# on 2026-10-18) are pinned in a known_hosts file of our own and must match — no
+# trust-on-first-use, so an interception on a venue network can't slip in a fake key.
+# If GitHub ever rotates its keys, update them here.
+GITHUB_HOST_KEYS=(
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+    "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg="
+    "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk="
+)
 ensure_github_ssh_config() {
     [[ -s "$SSH_KEY_FILE" ]] || return 0
-    local cfg="/home/$PI_USER/.ssh/config" want
-    want="$(printf '%s\n' "# Managed by VCM_Deploy — GitHub over SSH on port 443" \
+    local dir="/home/$PI_USER/.ssh" cfg kh want_cfg want_kh k changed=0
+    cfg="$dir/config"; kh="$dir/known_hosts_github"
+    want_cfg="$(printf '%s\n' "# Managed by VCM_Deploy — GitHub over SSH on port 443, host keys pinned" \
         "Host github.com" \
         "    HostName ssh.github.com" \
         "    Port 443" \
         "    IdentityFile $SSH_KEY_FILE" \
         "    IdentitiesOnly yes" \
-        "    StrictHostKeyChecking accept-new" \
+        "    UserKnownHostsFile $kh" \
+        "    StrictHostKeyChecking yes" \
         "    ConnectTimeout 15")"
-    [[ "$(cat "$cfg" 2>/dev/null)" == "$want" ]] && return 0
-    mkdir -p "/home/$PI_USER/.ssh"
-    printf '%s\n' "$want" > "$cfg"
-    chmod 600 "$cfg"
-    chown "$PI_USER:$PI_USER" "/home/$PI_USER/.ssh" "$cfg"
-    LOG "GitHub SSH config written (ssh.github.com:443)"
+    want_kh="$(for k in "${GITHUB_HOST_KEYS[@]}"; do printf '%s %s\n' "[ssh.github.com]:443" "$k"; done)"
+    mkdir -p "$dir"
+    if [[ "$(cat "$kh" 2>/dev/null)" != "$want_kh" ]]; then
+        printf '%s\n' "$want_kh" > "$kh"; changed=1
+    fi
+    if [[ "$(cat "$cfg" 2>/dev/null)" != "$want_cfg" ]]; then
+        printf '%s\n' "$want_cfg" > "$cfg"; changed=1
+    fi
+    chmod 600 "$cfg" "$kh"
+    chown "$PI_USER:$PI_USER" "$dir" "$cfg" "$kh"
+    [[ "$changed" -eq 1 ]] && LOG "GitHub SSH config written (ssh.github.com:443, host keys pinned)"
+    return 0
 }
 
 # --- Provisioning API ---
