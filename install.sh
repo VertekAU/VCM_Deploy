@@ -23,7 +23,7 @@ INSTALL_LOG="/var/log/vcm-install.log"
 # reading its original file (bash reads scripts incrementally).
 install_files() {
     local f
-    for f in vcm_modem_migrate.sh vcm_modem_reconnect.sh vcm_deploy.sh vcm_lte_watchdog.sh; do
+    for f in vcm_modem_migrate.sh vcm_modem_reconnect.sh vcm_deploy.sh vcm_lte_watchdog.sh vcm_pkg.sh; do
         install -m 0755 -o root -g root "$INSTALL_DIR/$f" "$SBIN/.$f.new"
         mv -f "$SBIN/.$f.new" "$SBIN/$f"
     done
@@ -103,10 +103,18 @@ done
 # and apt-get install refuses to run until it's resolved.
 DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confold \
     || LOG "WARNING: dpkg --configure -a failed — apt-get may fail below"
-DEBIAN_FRONTEND=noninteractive apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade \
-    -o Dpkg::Options::="--force-confold" \
-    git libqmi-utils modemmanager
+if [[ -x "$SBIN/vcm_pkg.sh" ]]; then
+    # Installed by an earlier run: mirrors/HTTPS over Wi-Fi/Ethernet, then LTE, with
+    # apt's signature checks enforced (a firewall's substituted page is never used)
+    "$SBIN/vcm_pkg.sh" apt debian,raspberrypi -- install -y --no-upgrade \
+        git libqmi-utils modemmanager \
+        || LOG "WARNING: package step incomplete — see the vcm-pkg lines above"
+else
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade \
+        -o Dpkg::Options::="--force-confold" \
+        git libqmi-utils modemmanager
+fi
 
 # An update cut off mid-pull (power loss) can leave ORIG_HEAD empty;
 # git then refuses every later pull. It is a scratch ref git rewrites, so a
