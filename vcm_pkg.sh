@@ -110,11 +110,11 @@ select_source() {
         fi
         LOG "apt $repo: $url — ${LAST_WHY}" >&2
     done
-    # Last resort: LTE, HTTPS sources first (at most two — every attempt costs LTE data)
+    # Last resort: LTE, every source in the same order. A source that fails costs
+    # almost nothing (a refused connection or a TLS handshake); data is only spent
+    # by the one that works, and verification applies exactly as over Wi-Fi.
     if [[ -n "$(lte_gateway)" ]]; then
-        local n=0
-        for url in $(tr ' ' '\n' <<<"${tried[*]}" | grep '^https://'); do
-            (( n++ >= 2 )) && break
+        for url in "${tried[@]}"; do
             route_host_via_lte "$(host_of "$url")" || continue
             if apt_try "$repo" "$url"; then
                 LOG "apt $repo: using $url over LTE — no source worked over Wi-Fi/Ethernet" >&2
@@ -149,28 +149,50 @@ cmd_apt() {
     return "$rc"
 }
 
+# Is a package index reachable (a real answer, not a timeout)? A 6-second probe lets a
+# blocked index be skipped in seconds — pip itself can take minutes to give up. pip still
+# does the real, certificate-checked fetch wherever the probe passes.
+index_reachable() { [[ "$(curl -s -o /dev/null -m 6 -w '%{http_code}' "$1/pip/" 2>/dev/null)" =~ ^[23] ]]; }
+
+pip_try() {   # pip_try <index|default> <pip args...>; sets LAST_WHY
+    local how="$1" out rc; shift
+    if [[ "$how" == "default" ]]; then
+        out="$(pip3 "$@" --timeout 20 --retries 0 2>&1)"; rc=$?
+    else
+        out="$(pip3 "$@" --isolated --index-url "$how" --timeout 20 --retries 0 2>&1)"; rc=$?
+    fi
+    LAST_WHY="$(grep -m1 -oE "(SSLError|CERTIFICATE_VERIFY_FAILED|ConnectTimeout|Connection to [^ ]+ timed out|NewConnectionError|No matching distribution[^.]*|HTTP error [0-9]+)" <<<"$out" || tail -1 <<<"$out")"
+    return "$rc"
+}
+
 cmd_pip() {
     [[ "${1:-}" == "--" ]] && shift
-    local how out rc
     # default config (PyPI + piwheels), then each index alone (ignoring pip's config)
-    for how in "default" "https://www.piwheels.org/simple" "https://pypi.org/simple"; do
+    local tries=("default" "https://www.piwheels.org/simple" "https://pypi.org/simple") how
+    for how in "${tries[@]}"; do
         if [[ "$how" == "default" ]]; then
-            out="$(pip3 "$@" --timeout 20 --retries 0 2>&1)"; rc=$?
-        else
-            out="$(pip3 "$@" --isolated --index-url "$how" --timeout 20 --retries 0 2>&1)"; rc=$?
+            index_reachable https://pypi.org/simple || index_reachable https://www.piwheels.org/simple \
+                || { LOG "pip: default — indexes unreachable"; continue; }
+        elif ! index_reachable "$how"; then
+            LOG "pip: $how — unreachable"; continue
         fi
-        if [[ "$rc" -eq 0 ]]; then
+        if pip_try "$how" "$@"; then
             [[ "$how" != "default" ]] && LOG "pip: used $how (over Wi-Fi/Ethernet)"
             return 0
         fi
-        LOG "pip: $how failed — $(grep -m1 -oE "(SSLError|CERTIFICATE_VERIFY_FAILED|ConnectTimeout|Connection to [^ ]+ timed out|NewConnectionError|No matching distribution[^.]*|HTTP error [0-9]+)" <<<"$out" || tail -1 <<<"$out")"
+        LOG "pip: $how failed — $LAST_WHY"
     done
+    # Last resort: LTE, the same list (failures cost almost nothing; only a success uses data)
     if [[ -n "$(lte_gateway)" ]]; then
         local h
         for h in pypi.org files.pythonhosted.org www.piwheels.org archive1.piwheels.org; do route_host_via_lte "$h" || true; done
-        out="$(pip3 "$@" --timeout 20 --retries 0 2>&1)"; rc=$?
-        if [[ "$rc" -eq 0 ]]; then LOG "pip: installed over LTE — no index worked over Wi-Fi/Ethernet"; return 0; fi
-        LOG "pip: failed over LTE too — $(tail -1 <<<"$out")"
+        for how in "${tries[@]}"; do
+            if pip_try "$how" "$@"; then
+                LOG "pip: installed over LTE ($how) — no index worked over Wi-Fi/Ethernet"
+                return 0
+            fi
+            LOG "pip: $how over LTE failed — $LAST_WHY"
+        done
     fi
     return 1
 }
