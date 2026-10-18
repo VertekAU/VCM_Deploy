@@ -31,6 +31,11 @@ install_files() {
              vcm-lte-watchdog.service vcm-lte-watchdog.timer; do
         install -m 0644 -o root -g root "$INSTALL_DIR/$f" "$SYSTEMD/$f"
     done
+    # NetworkManager connectivity check — read at NetworkManager start, so it takes
+    # effect from the next boot (no mid-day reload: a reload re-ordered DNS in testing)
+    mkdir -p /etc/NetworkManager/conf.d
+    install -m 0644 -o root -g root "$INSTALL_DIR/90-vertek-connectivity.conf" \
+        /etc/NetworkManager/conf.d/90-vertek-connectivity.conf
     systemctl daemon-reload
     # The watchdog timer starts with the next boot (a full install also starts it now)
     systemctl enable vcm-modem-reconnect.service vcm-deploy.service vcm-lte-watchdog.timer

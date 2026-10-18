@@ -13,7 +13,7 @@ VCM_UPDATE_DIR="/home/pi/vcm_update"
 VCM_UPDATE_REPO="git@github.com:VertekAU/VCM_Update.git"
 PROVISIONING_URL="https://ywnjbeqoowlqyngmzkpc.supabase.co/functions/v1/rpi-connect-provisioning"
 PI_USER="pi"
-GIT_SSH="ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+GIT_SSH="ssh -i $SSH_KEY_FILE -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
 
 mkdir -p "$VERTEK_DIR"
 chmod 755 "$VERTEK_DIR"
@@ -104,15 +104,14 @@ detect_iccid() {
     ICCID="$iccid"
 }
 
-# --- Network Quality Verification ---
-# Raises the route metric on any wired/WiFi interface that has an IP but no working
-# internet path, so the LTE modem (metric 700) takes precedence.
-#
-# Only a dead data path demotes. The HTTP check also needs DNS, and demoting can never
-# fix DNS: on sites whose DNS servers sit behind the router on another subnet (Carina),
-# a demoted Wi-Fi sends DNS queries out over LTE where those private addresses don't
-# exist, so DNS dies entirely and the core drops off the internet (CORE05, 2026-10-15,
-# after one failed check during a full update).
+# --- Network status at boot (report only) ---
+# NetworkManager's connectivity check (90-vertek-connectivity.conf, installed by
+# install.sh) handles failover all day: it pushes an interface without internet behind
+# LTE within one check interval and restores it when the internet returns, moving the
+# DNS order with it. This used to demote failing interfaces itself (metric 800), but
+# that hand-made route blocked NetworkManager's failback, so a single venue outage kept
+# a core on LTE until the next reboot (UniFi test, 2026-10-16). Now it only logs what
+# it sees at boot, for diagnosis.
 
 # Internet reachable through this interface at the IP level — no DNS involved
 ip_path_ok() {
@@ -121,17 +120,6 @@ ip_path_ok() {
         ping -I "$iface" -c 2 -W 3 -q "$target" >/dev/null 2>&1 && return 0
     done
     return 1
-}
-
-# A demoted interface's DNS servers that aren't on its local subnet would otherwise
-# follow the LTE default route — keep them reachable through the interface's gateway
-keep_dns_reachable() {
-    local iface="$1" gw="$2" dns
-    for dns in $(nmcli -g IP4.DNS device show "$iface" 2>/dev/null | tr '|' ' '); do
-        ip -4 route get "$dns" oif "$iface" 2>/dev/null | grep -q " via " || continue   # on-link
-        ip route replace "$dns/32" via "$gw" dev "$iface" \
-            && LOG "Keeping $iface DNS server $dns reachable via $gw"
-    done
 }
 
 verify_networks() {
@@ -143,27 +131,43 @@ verify_networks() {
         gw="$(ip route show default dev "$iface" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')" || true
         [[ -n "${ip:-}" && -n "${gw:-}" ]] || continue
 
-        # A few tries — one blip shouldn't move a core onto LTE
-        local code="" attempt
-        for attempt in 1 2 3; do
-            code="$(curl -s --max-time 5 --interface "$iface" -o /dev/null -w "%{http_code}" "$check_url" 2>/dev/null)" || true
-            [[ "$code" == "204" ]] && break
-            [[ "$attempt" -lt 3 ]] && sleep 3
-        done
+        local code=""
+        code="$(curl -s --max-time 5 --interface "$iface" -o /dev/null -w "%{http_code}" "$check_url" 2>/dev/null)" || true
         code="${code:-000}"
-
         if [[ "$code" == "204" ]]; then
             LOG "$iface ($ip) connectivity OK"
         elif ip_path_ok "$iface"; then
-            LOG "$iface ($ip) reaches the internet but the HTTP check failed (HTTP $code) — DNS or web filtering, not a dead link; keeping $iface preferred"
+            LOG "$iface ($ip) reaches the internet but the HTTP check failed (HTTP $code) — DNS or web filtering"
         else
-            LOG "$iface ($ip) has no working internet path (HTTP $code, no ping) — raising metric to 800"
-            ip route del default dev "$iface" 2>/dev/null || true
-            ip route add default via "$gw" dev "$iface" metric 800 \
-                || LOG "WARNING: could not re-add $iface default route at metric 800"
-            keep_dns_reachable "$iface" "$gw"
+            LOG "$iface ($ip) has no internet path (HTTP $code, no ping) — NetworkManager moves traffic to LTE"
         fi
     done
+}
+
+# --- GitHub over port 443 ---
+# Venues often block outbound SSH (port 22). GitHub serves the same SSH endpoint on
+# ssh.github.com:443, so every pull of the private repos goes there — remotes stay
+# git@github.com:… and this config redirects them. Written every boot (not only at
+# provisioning) so existing cores pick it up; a core on a port-22-blocked site gets
+# this script via VCM_Update's nightly VCM_Deploy refresh (HTTPS), then pulls over 443.
+# ConnectTimeout keeps a blocked attempt from hanging ~2 minutes (each pull retries).
+ensure_github_ssh_config() {
+    [[ -s "$SSH_KEY_FILE" ]] || return 0
+    local cfg="/home/$PI_USER/.ssh/config" want
+    want="$(printf '%s\n' "# Managed by VCM_Deploy — GitHub over SSH on port 443" \
+        "Host github.com" \
+        "    HostName ssh.github.com" \
+        "    Port 443" \
+        "    IdentityFile $SSH_KEY_FILE" \
+        "    IdentitiesOnly yes" \
+        "    StrictHostKeyChecking accept-new" \
+        "    ConnectTimeout 15")"
+    [[ "$(cat "$cfg" 2>/dev/null)" == "$want" ]] && return 0
+    mkdir -p "/home/$PI_USER/.ssh"
+    printf '%s\n' "$want" > "$cfg"
+    chmod 600 "$cfg"
+    chown "$PI_USER:$PI_USER" "/home/$PI_USER/.ssh" "$cfg"
+    LOG "GitHub SSH config written (ssh.github.com:443)"
 }
 
 # --- Provisioning API ---
@@ -230,14 +234,7 @@ ensure_credentials() {
         printf '%s\n' "$PROV_SSH_KEY" > "$SSH_KEY_FILE"
         chmod 600 "$SSH_KEY_FILE"
 
-        cat > "/home/$PI_USER/.ssh/config" <<EOF
-Host github.com
-    IdentityFile $SSH_KEY_FILE
-    IdentitiesOnly yes
-    StrictHostKeyChecking accept-new
-EOF
-        chmod 600 "/home/$PI_USER/.ssh/config"
-        ssh-keyscan -H github.com >> "/home/$PI_USER/.ssh/known_hosts" 2>/dev/null || true
+        ensure_github_ssh_config
         chown -R "$PI_USER:$PI_USER" "/home/$PI_USER/.ssh"
 
         # Root known_hosts for sudo git operations
@@ -346,6 +343,7 @@ loginctl enable-linger "$PI_USER" 2>/dev/null || true
 detect_iccid
 verify_networks
 set_fleet_password
+ensure_github_ssh_config   # before the deploy-key check, which also talks to GitHub
 ensure_credentials
 setup_vcm_update
 LOG "=== VCM Deploy complete ==="
