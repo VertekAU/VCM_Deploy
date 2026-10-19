@@ -67,6 +67,10 @@ nmcli connection show "$NM_CONN_NAME" &>/dev/null || has_profile=0
 case "$modem_state" in
     registered|connected) reason="modem registered (state: $modem_state) but wwan0 has no address" ;;
     "")                   reason="ModemManager isn't reporting the modem" ;;
+    # Switched off locally (low-power) — the network can't clear this; connecting the
+    # profile enables the modem. Seen when a connection was taken down by hand, after
+    # which NetworkManager doesn't auto-connect again until the next boot.
+    disabled)             reason="modem is switched off (disabled)" ;;
     *)
         if [[ "$has_profile" -eq 1 ]]; then
             note waiting "LTE down — modem not registered (state: $modem_state); '$NM_CONN_NAME' connects once it registers"
@@ -87,9 +91,15 @@ if (( fails > 0 && $(date +%s) - last < wait_min * 60 )); then
     exit 0
 fi
 
-LOG "LTE down: $reason — re-running modem reconnect (attempt $((fails + 1)))"
+LOG "LTE down: $reason — recovering (attempt $((fails + 1)))"
 echo "$((fails + 1)) $(date +%s)" > "$BACKOFF_FILE"
-systemctl restart vcm-modem-reconnect.service || true
+if [[ "$modem_state" == "disabled" && "$has_profile" -eq 1 ]]; then
+    # Bringing the profile up enables the modem, registers and connects
+    timeout 90 nmcli connection up "$NM_CONN_NAME" >/dev/null 2>&1 || true
+    sleep 5
+else
+    systemctl restart vcm-modem-reconnect.service || true
+fi
 
 ip="$(wwan_ip)"
 if [[ -n "$ip" ]]; then
