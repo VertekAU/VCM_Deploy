@@ -40,8 +40,20 @@ modem_usb_path() {
     done
     return 1
 }
+# USB port reset — re-initialises the modem's USB side, as a Core reboot does
+usb_reset_modem() {
+    local id
+    id="$(lsusb 2>/dev/null | grep -o '2c7c:[0-9a-f]*' | head -1)"
+    if [[ -n "$id" ]] && command -v usbreset &>/dev/null; then
+        LOG "USB reset of the modem ($id)"
+        timeout 20 usbreset "$id" >/dev/null 2>&1 || LOG "WARNING: usbreset $id failed"
+        sleep 5
+    else
+        LOG "No USB reset available (modem not on USB or usbreset missing)"
+    fi
+}
 reset_modem() {
-    local why="$1" port sent=0 dropped=0 dev id i
+    local why="$1" port sent=0 dropped=0 dev i
     LOG "Resetting modem: $why"
     dev="$(modem_usb_path || true)"
     if [[ -n "$dev" && "$(cat "$dev/authorized" 2>/dev/null)" == "0" ]]; then
@@ -64,14 +76,8 @@ reset_modem() {
         done
     fi
     if [[ "$dropped" -eq 0 ]]; then
-        id="$(lsusb 2>/dev/null | grep -o '2c7c:[0-9a-f]*' | head -1)"
-        if [[ -n "$id" ]] && command -v usbreset &>/dev/null; then
-            LOG "Modem didn't restart from an AT command — USB reset of $id"
-            timeout 20 usbreset "$id" >/dev/null 2>&1 || LOG "WARNING: usbreset $id failed"
-            sleep 5
-        else
-            LOG "Modem didn't restart and no USB reset is available"
-        fi
+        LOG "Modem didn't restart from an AT command"
+        usb_reset_modem
     fi
     LOG "Waiting for cdc-wdm0 (up to 3 min)..."
     for i in $(seq 1 60); do
@@ -183,6 +189,14 @@ if [[ -d /opt/sixfab ]]; then
     /usr/local/sbin/vcm_modem_migrate.sh || { LOG "Migration failed"; exit 1; }
 fi
 
+# A deauthorized modem has no interfaces at all and would look like ECM mode below
+_modem_dev="$(modem_usb_path || true)"
+if [[ -n "$_modem_dev" && "$(cat "$_modem_dev/authorized" 2>/dev/null)" == "0" ]]; then
+    LOG "Modem is deauthorized on USB — authorizing it"
+    echo 1 > "$_modem_dev/authorized" 2>/dev/null || true
+    sleep 5
+fi
+
 # --- Path 2: ECM→QMI flip (fresh device, Quectel modem in ECM, no cdc-wdm0 yet) ---
 if lsusb 2>/dev/null | grep -q "2c7c" && [[ ! -e /dev/cdc-wdm0 ]]; then
     LOG "Quectel modem detected in ECM mode (no cdc-wdm0) — flipping to QMI..."
@@ -211,16 +225,32 @@ if lsusb 2>/dev/null | grep -q "2c7c" && [[ ! -e /dev/cdc-wdm0 ]]; then
     done
 
     if [[ "$FLIPPED" -eq 0 ]]; then
-        LOG "No ttyUSB port responded — cannot flip modem mode; wlan0 sufficient"
-        exit 0
+        # No AT port at all: not ECM mode but a modem with no working interfaces
+        # (hung) — a USB reset brings its ports back
+        LOG "No ttyUSB port responded — not ECM mode; resetting the modem's USB"
+        usb_reset_modem
+        for i in $(seq 1 20); do
+            [[ -e /dev/cdc-wdm0 ]] && break
+            sleep 3
+        done
+        if [[ ! -e /dev/cdc-wdm0 ]]; then
+            systemctl start ModemManager 2>/dev/null || true
+            LOG "cdc-wdm0 still missing after USB reset — wlan0 sufficient"
+            exit 0
+        fi
+        LOG "cdc-wdm0 present after USB reset"
+    else
+        LOG "Waiting for /dev/cdc-wdm0 after modem reboot (up to 3 min)..."
+        for i in $(seq 1 60); do
+            [[ -e /dev/cdc-wdm0 ]] && { LOG "cdc-wdm0 appeared"; break; }
+            if [[ "$i" -eq 60 ]]; then
+                systemctl start ModemManager 2>/dev/null || true
+                LOG "cdc-wdm0 not found after 3 minutes — wlan0 sufficient"
+                exit 0
+            fi
+            sleep 3
+        done
     fi
-
-    LOG "Waiting for /dev/cdc-wdm0 after modem reboot (up to 3 min)..."
-    for i in $(seq 1 60); do
-        [[ -e /dev/cdc-wdm0 ]] && { LOG "cdc-wdm0 appeared"; break; }
-        [[ "$i" -eq 60 ]] && { LOG "cdc-wdm0 not found after 3 minutes — wlan0 sufficient"; exit 0; }
-        sleep 3
-    done
 fi
 
 # --- Wait for QMI device node (up to 30s) ---
