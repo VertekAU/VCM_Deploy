@@ -42,15 +42,27 @@ modem_usb_path() {
 }
 # USB port reset — re-initialises the modem's USB side, as a Core reboot does
 usb_reset_modem() {
-    local id
+    local id dev i
     id="$(lsusb 2>/dev/null | grep -o '2c7c:[0-9a-f]*' | head -1)"
     if [[ -n "$id" ]] && command -v usbreset &>/dev/null; then
         LOG "USB reset of the modem ($id)"
         timeout 20 usbreset "$id" >/dev/null 2>&1 || LOG "WARNING: usbreset $id failed"
-        sleep 5
     else
-        LOG "No USB reset available (modem not on USB or usbreset missing)"
+        LOG "No usbreset available — re-authorizing the modem instead"
     fi
+    for i in $(seq 1 10); do
+        { [[ -e /dev/cdc-wdm0 ]] || ls /dev/ttyUSB* &>/dev/null; } && return 0
+        sleep 1
+    done
+    # A reset doesn't re-attach interfaces that have lost their driver; re-authorizing
+    # the device detaches and re-attaches all of them
+    dev="$(modem_usb_path || true)"
+    [[ -n "$dev" ]] || return 0
+    LOG "Modem ports still missing — re-authorizing it on USB"
+    echo 0 > "$dev/authorized" 2>/dev/null || true
+    sleep 2
+    echo 1 > "$dev/authorized" 2>/dev/null || true
+    sleep 5
 }
 reset_modem() {
     local why="$1" port sent=0 dropped=0 dev i
