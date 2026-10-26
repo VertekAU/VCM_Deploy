@@ -1,3 +1,7 @@
+v1.1.8 (unreleased)
+- vcm_modem_reconnect.sh / vcm_lte_watchdog.sh: a modem that hangs on USB is now reset in place instead of waiting for a Core reboot. At Roundhouse UNSW (Oct 2026) the modem's control port stopped answering ("cdc-wdm0 timed out 10 consecutive times, marking modem as invalid"), ModemManager dropped it while it stayed on USB, and the watchdog's reconnect only replayed udev and gave up, 7 times out of 7; only a Core reboot recovered it, up to 31 hours later under core_diagnostics' backoff. Now, when ModemManager can't see a modem that is on USB, or reports it "failed" for a non-SIM reason (e.g. "Failed to load current capabilities: QMI … Transaction timed out" after a warm reboot), the modem is reset: AT+CFUN=1,1, or a USB port reset (usbreset) if it doesn't go down, then ModemManager restarts and re-detects it. The stale-data-session recovery uses the same reset (and gains the USB-reset fallback). A modem failed for a SIM reason is left alone
+- vcm-modem-reconnect.service TimeoutStartSec 600 → 900 s and vcm-lte-watchdog.service 900 → 1200 s — a reset with the full waits can take ~10 minutes
+
 v1.1.7
 2026-10-19
 - vcm_lte_watchdog.sh: a modem switched off locally (ModemManager state "disabled") is recovered by bringing vertek-lte up, which enables it — previously treated like "not registered" and waited for forever (found while prototyping a clean modem detach at shutdown; tested: back in 7 s)

@@ -25,6 +25,88 @@ unblock_modem_path() {
         usbguard allow-device "$dev_id" 2>/dev/null || true
     done
 }
+# --- Modem reset ---
+# For a modem that is on USB but unusable: a stale data session, a modem stuck in
+# ModemManager's "failed" state, or a hung control port that made ModemManager
+# drop the modem ("marking modem as invalid" — Roundhouse UNSW, Oct 2026, where
+# only a Core reboot used to recover it). AT+CFUN=1,1 reboots the modem; if it
+# doesn't go down (no AT port, or the firmware ignores it), a USB port reset does
+# to it what a Core reboot does. ModemManager is then restarted to re-detect it.
+# Sets MODEM_IDX; returns 1 if the modem doesn't come back.
+modem_usb_path() {
+    local d
+    for d in /sys/bus/usb/devices/*; do
+        [[ "$(cat "$d/idVendor" 2>/dev/null)" == "2c7c" ]] && { echo "$d"; return 0; }
+    done
+    return 1
+}
+reset_modem() {
+    local why="$1" port sent=0 dropped=0 dev id i
+    LOG "Resetting modem: $why"
+    dev="$(modem_usb_path || true)"
+    if [[ -n "$dev" && "$(cat "$dev/authorized" 2>/dev/null)" == "0" ]]; then
+        LOG "Modem is deauthorized on USB — authorizing it"
+        echo 1 > "$dev/authorized" 2>/dev/null || true
+    fi
+    for port in ttyUSB2 ttyUSB3 ttyUSB1 ttyUSB0; do
+        [[ -e "/dev/$port" ]] || continue
+        timeout 10 setsid bash -c "
+            exec 3<>/dev/$port 2>/dev/null || exit 1
+            printf 'AT+CFUN=1,1\r' >&3
+            sleep 2
+        " 2>/dev/null \
+            && { sent=1; LOG "AT+CFUN=1,1 sent via /dev/$port — modem rebooting"; break; } || true
+    done
+    if [[ "$sent" -eq 1 ]]; then
+        for i in $(seq 1 20); do
+            [[ ! -e /dev/cdc-wdm0 ]] && { dropped=1; break; }
+            sleep 1
+        done
+    fi
+    if [[ "$dropped" -eq 0 ]]; then
+        id="$(lsusb 2>/dev/null | grep -o '2c7c:[0-9a-f]*' | head -1)"
+        if [[ -n "$id" ]] && command -v usbreset &>/dev/null; then
+            LOG "Modem didn't restart from an AT command — USB reset of $id"
+            timeout 20 usbreset "$id" >/dev/null 2>&1 || LOG "WARNING: usbreset $id failed"
+            sleep 5
+        else
+            LOG "Modem didn't restart and no USB reset is available"
+        fi
+    fi
+    LOG "Waiting for cdc-wdm0 (up to 3 min)..."
+    for i in $(seq 1 60); do
+        [[ -e /dev/cdc-wdm0 ]] && { LOG "cdc-wdm0 present"; break; }
+        [[ "$i" -eq 60 ]] && { LOG "cdc-wdm0 not found after reset"; return 1; }
+        sleep 3
+    done
+    # Restart MM so it re-discovers the modem with clean state — without this,
+    # MM may keep stale bearer state or its "invalid" verdict on the old modem
+    LOG "Restarting ModemManager for clean modem re-discovery..."
+    systemctl restart ModemManager 2>/dev/null || true
+    sleep 3
+    udevadm trigger --subsystem-match=tty
+    udevadm trigger --subsystem-match=usbmisc
+    udevadm trigger --subsystem-match=net
+    for i in $(seq 1 30); do
+        MODEM_IDX="$(mmcli -L 2>/dev/null | grep -o 'Modem/[0-9]*' | grep -o '[0-9]*' | tail -1)"
+        [[ -n "${MODEM_IDX:-}" ]] && { LOG "Modem re-detected at index $MODEM_IDX"; return 0; }
+        sleep 2
+    done
+    LOG "MM did not re-detect the modem after reset"
+    return 1
+}
+
+# ModemManager's "failed" state for a reason a modem reset can clear (not the SIM)
+modem_failed_resettable() {
+    local kv
+    kv="$(mmcli -m "$1" --output-keyvalue 2>/dev/null)"
+    [[ "$(awk -F': ' '/modem.generic.state[[:space:]]/{print $NF}' <<<"$kv" | tr -d ' ')" == "failed" ]] || return 1
+    case "$(awk -F': ' '/modem.generic.state-failed-reason/{print $NF}' <<<"$kv" | tr -d ' ')" in
+        sim-*|esim-*) return 1 ;;
+    esac
+    return 0
+}
+
 if unblock_modem_path; then
     sleep 5   # let devices behind the hub enumerate, then catch the modem itself
     unblock_modem_path || true
@@ -211,9 +293,21 @@ MODEM_IDX=""
 for i in $(seq 1 30); do
     MODEM_IDX="$(mmcli -L 2>/dev/null | grep -o 'Modem/[0-9]*' | grep -o '[0-9]*' | tail -1)"
     [[ -n "${MODEM_IDX:-}" ]] && { LOG "Modem detected at index $MODEM_IDX"; break; }
-    [[ "$i" -eq 30 ]] && { LOG "MM did not detect modem after 60s — wlan0 sufficient, continuing"; exit 0; }
     sleep 2
 done
+if [[ -z "${MODEM_IDX:-}" ]]; then
+    # On USB but invisible to ModemManager: a hung modem, which a reset clears
+    if lsusb 2>/dev/null | grep -q "2c7c"; then
+        reset_modem "MM did not detect the modem on USB after 60s" \
+            || { LOG "Modem still not usable after reset — wlan0 sufficient, continuing"; exit 0; }
+    else
+        LOG "MM did not detect modem after 60s — wlan0 sufficient, continuing"; exit 0
+    fi
+fi
+if modem_failed_resettable "$MODEM_IDX"; then
+    reset_modem "modem in ModemManager's failed state" \
+        || { LOG "Modem still not usable after reset — wlan0 sufficient, continuing"; exit 0; }
+fi
 
 # --- Ensure NM GSM connection profile exists ---
 # Before the registration wait: with autoconnect, NM brings LTE up by itself once
@@ -284,55 +378,8 @@ if [[ -n "${_existing_ip:-}" && "$_existing_ip" != 169.254.* ]]; then
 else
     LOG "Bringing up '$NM_CONN_NAME'..."
     if ! nmcli connection up "$NM_CONN_NAME" 2>/dev/null; then
-        LOG "NM activation failed — attempting modem reset to clear stale PDP context..."
-
-        RESET_SENT=0
-        for port in ttyUSB2 ttyUSB3 ttyUSB1 ttyUSB0; do
-            [[ -e "/dev/$port" ]] || continue
-            setsid bash -c "
-                exec 3<>/dev/$port 2>/dev/null || exit 1
-                printf 'AT+CFUN=1,1\r' >&3
-                sleep 2
-            " 2>/dev/null \
-                && RESET_SENT=1 \
-                && LOG "AT+CFUN=1,1 sent via /dev/$port — modem rebooting" \
-                && break || true
-        done
-
-        if [[ "$RESET_SENT" -eq 0 ]]; then
-            LOG "Could not send modem reset — wlan0 sufficient, continuing"
-            exit 0
-        fi
-
-        LOG "Waiting for cdc-wdm0 to drop after reset..."
-        for i in $(seq 1 15); do
-            [[ ! -e /dev/cdc-wdm0 ]] && break
-            sleep 1
-        done
-        LOG "Waiting for cdc-wdm0 to reappear after reset (up to 3 min)..."
-        for i in $(seq 1 60); do
-            [[ -e /dev/cdc-wdm0 ]] && { LOG "cdc-wdm0 reappeared"; break; }
-            [[ "$i" -eq 60 ]] && { LOG "cdc-wdm0 not found after reset — wlan0 sufficient"; exit 0; }
-            sleep 3
-        done
-
-        # Restart MM so it re-discovers the modem with clean state — without this,
-        # MM may retain stale bearer/connection state from the failed activation attempt,
-        # causing re-detection or re-registration to behave inconsistently.
-        LOG "Restarting ModemManager for clean modem re-discovery..."
-        systemctl restart ModemManager 2>/dev/null || true
-        sleep 3
-
-        udevadm trigger --subsystem-match=tty
-        udevadm trigger --subsystem-match=usbmisc
-        udevadm trigger --subsystem-match=net
-
-        for i in $(seq 1 30); do
-            MODEM_IDX="$(mmcli -L 2>/dev/null | grep -o 'Modem/[0-9]*' | grep -o '[0-9]*' | tail -1)"
-            [[ -n "${MODEM_IDX:-}" ]] && { LOG "Modem re-detected at index $MODEM_IDX"; break; }
-            [[ "$i" -eq 30 ]] && { LOG "MM did not re-detect modem after reset — wlan0 sufficient"; exit 0; }
-            sleep 2
-        done
+        reset_modem "NM activation failed (stale data session)" \
+            || { LOG "Modem still not usable after reset — wlan0 sufficient, continuing"; exit 0; }
 
         for i in $(seq 1 30); do
             state="$(mmcli -m "$MODEM_IDX" --output-keyvalue 2>/dev/null \

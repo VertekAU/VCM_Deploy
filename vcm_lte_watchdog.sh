@@ -5,7 +5,9 @@
 # later (SIM re-enabled, signal back) and the data connection won't come up by
 # itself — e.g. a stale data session that needs a modem reset — nothing retries
 # until the next reboot. This re-runs the reconnect, with its modem-reset
-# recovery, only when wwan0 has no address while the modem is registered.
+# recovery, when wwan0 has no address and the modem is registered, missing from
+# ModemManager, failed (not for a SIM reason) or switched off. A modem that is
+# just not registered is left alone — NetworkManager connects once it registers.
 # A working LTE connection is never touched.
 set -uo pipefail
 
@@ -66,7 +68,18 @@ nmcli connection show "$NM_CONN_NAME" &>/dev/null || has_profile=0
 # NM connects by itself once the modem registers.
 case "$modem_state" in
     registered|connected) reason="modem registered (state: $modem_state) but wwan0 has no address" ;;
+    # The reconnect resets a modem ModemManager has dropped (e.g. its control port
+    # hung: "marking modem as invalid"), which used to need a Core reboot
     "")                   reason="ModemManager isn't reporting the modem" ;;
+    failed)
+        failed_reason="$(mmcli -m any --output-keyvalue 2>/dev/null \
+            | awk -F': ' '/modem.generic.state-failed-reason/{print $NF}' | tr -d ' ')"
+        case "$failed_reason" in
+            sim-*|esim-*)
+                note waiting "LTE down — modem failed: $failed_reason (a reset can't fix the SIM)"
+                exit 0 ;;
+        esac
+        reason="modem failed to initialise (${failed_reason:-unknown}) — resetting it" ;;
     # Switched off locally (low-power) — the network can't clear this; connecting the
     # profile enables the modem. Seen when a connection was taken down by hand, after
     # which NetworkManager doesn't auto-connect again until the next boot.
