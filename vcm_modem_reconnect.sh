@@ -211,7 +211,7 @@ fi
 
 # --- Path 2: ECM→QMI flip (fresh device, Quectel modem in ECM, no cdc-wdm0 yet) ---
 if lsusb 2>/dev/null | grep -q "2c7c" && [[ ! -e /dev/cdc-wdm0 ]]; then
-    LOG "Quectel modem detected in ECM mode (no cdc-wdm0) — flipping to QMI..."
+    LOG "Quectel modem without cdc-wdm0 (ECM mode?) — flipping to QMI..."
 
     # Release ttyUSB ports from ModemManager if active
     if systemctl is-active --quiet ModemManager 2>/dev/null; then
