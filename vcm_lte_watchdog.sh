@@ -9,7 +9,9 @@
 # ModemManager, failed (not for a SIM reason), switched off, stuck at "enabling"
 # for 10 minutes, or (Sixfab Base HAT) gone from USB. A modem that is just not
 # registered is left alone — NetworkManager connects once it registers.
-# A working LTE connection is never touched. When a reset has already failed, or the
+# Every 10 minutes it also checks that something gets through over LTE; an address
+# that passes nothing for ~6 minutes gets a fresh connection (and a modem reset if
+# that fails). A working LTE connection is never touched. When a reset has already failed, or the
 # modem is stuck or off USB, the reconnect power-cycles it (soft resets don't clear
 # a wedged modem — Nov 2026 fleet).
 set -uo pipefail
@@ -25,6 +27,9 @@ STUCK_FILE="$STATE_DIR/lte-watchdog.stuck"       # "<modem state> <epoch first s
 STUCK_MIN=10
 HARD_RESET_FLAG="$STATE_DIR/modem-reset-hard"    # read (and removed) by vcm_modem_reconnect.sh
 MODEM_POWER="/usr/local/sbin/vcm_modem_power.sh"
+DATA_FILE="$STATE_DIR/lte-watchdog.data"         # "<consecutive failed data checks> <epoch of last check>"
+DATA_CHECK_MIN=10
+DATA_FAILS=3
 CHAIN=(vcm-modem-reconnect.service vcm-deploy.service vcm-update.service)
 
 mkdir -p "$STATE_DIR"
@@ -44,6 +49,33 @@ wwan_ip() {
     return 0
 }
 
+# Does anything get through over LTE? Pings bound to wwan0 (~0.3 kB), then Google's
+# connectivity check if ICMP is filtered. An address alone doesn't prove the data
+# session works (StGeorge, Sep 2026: address kept, nothing passed).
+lte_data_ok() {
+    ping -I wwan0 -c 2 -W 5 -q 8.8.8.8 &>/dev/null && return 0
+    ping -I wwan0 -c 2 -W 5 -q 1.1.1.1 &>/dev/null && return 0
+    [[ "$(curl -s --interface wwan0 --max-time 10 -o /dev/null -w '%{http_code}' \
+        http://connectivitycheck.gstatic.com/generate_204 2>/dev/null)" == "204" ]]
+}
+
+# 0: LTE passes data (checked every DATA_CHECK_MIN minutes); 2: a check failed — re-check
+# on every run; 1: DATA_FAILS checks in a row failed (about 6 minutes)
+lte_data() {
+    local fails=0 last=0
+    [[ -f "$DATA_FILE" ]] && read -r fails last < "$DATA_FILE"
+    (( fails == 0 && $(date +%s) - last < DATA_CHECK_MIN * 60 )) && return 0
+    if lte_data_ok; then
+        echo "0 $(date +%s)" > "$DATA_FILE"
+        return 0
+    fi
+    fails=$((fails + 1))
+    echo "$fails $(date +%s)" > "$DATA_FILE"
+    (( fails >= DATA_FAILS )) && return 1
+    note "data-check" "LTE has an address (wwan0 $ip) but nothing gets through — re-checking"
+    return 2
+}
+
 # No Quectel modem on USB: nothing to watch on a Wi-Fi/Ethernet-only core. With the
 # Sixfab Base HAT fitted the modem should be there — it has crashed off USB.
 on_usb=1
@@ -59,10 +91,16 @@ for u in "${CHAIN[@]}"; do
 done
 
 ip="$(wwan_ip)"
+no_data=0
 if [[ -n "$ip" ]]; then
-    note up "LTE up — wwan0 $ip"
-    rm -f "$BACKOFF_FILE" "$STUCK_FILE"
-    exit 0
+    lte_data; data=$?
+    if (( data == 0 )); then
+        note up "LTE up — wwan0 $ip"
+        rm -f "$BACKOFF_FILE" "$STUCK_FILE"
+        exit 0
+    fi
+    (( data == 2 )) && exit 0
+    no_data=1
 fi
 
 # NM is mid-activation — let it finish
@@ -81,7 +119,12 @@ hard=0   # go straight to a power-cycle
 # else (searching, no signal, SIM locked or missing) is beyond a reconnect —
 # NM connects by itself once the modem registers.
 case "$modem_state" in
-    registered|connected) reason="modem registered (state: $modem_state) but wwan0 has no address" ;;
+    registered|connected)
+        if [[ "$no_data" -eq 1 ]]; then
+            reason="wwan0 $ip has an address but nothing gets through over LTE"
+        else
+            reason="modem registered (state: $modem_state) but wwan0 has no address"
+        fi ;;
     # The reconnect resets a modem ModemManager has dropped (e.g. its control port
     # hung: "marking modem as invalid"), which used to need a Core reboot
     "")
@@ -145,13 +188,16 @@ if [[ "$modem_state" == "disabled" && "$has_profile" -eq 1 ]]; then
     timeout 90 nmcli connection up "$NM_CONN_NAME" >/dev/null 2>&1 || true
     sleep 5
 else
+    # A dead session keeps its address, and the reconnect leaves an addressed wwan0
+    # alone: take the connection down so it activates a fresh one (or resets the modem)
+    [[ "$no_data" -eq 1 ]] && { nmcli connection down "$NM_CONN_NAME" >/dev/null 2>&1 || true; sleep 3; }
     systemctl restart vcm-modem-reconnect.service || true
 fi
 
 ip="$(wwan_ip)"
-if [[ -n "$ip" ]]; then
+if [[ -n "$ip" && ( "$no_data" -eq 0 || "$(lte_data_ok && echo ok)" == "ok" ) ]]; then
     LOG "LTE restored — wwan0 $ip"
-    rm -f "$BACKOFF_FILE"
+    rm -f "$BACKOFF_FILE" "$DATA_FILE"
     echo up > "$STATUS_FILE"
 else
     LOG "LTE still down after reconnect (see: journalctl -u vcm-modem-reconnect) — next attempt in $(backoff_min $((fails + 1))) min"
