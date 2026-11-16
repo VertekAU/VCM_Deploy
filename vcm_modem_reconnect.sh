@@ -10,6 +10,12 @@ LOG() { echo "[vcm-modem-reconnect $(date -Is)] $*"; }
 UDEV_RULE="/etc/udev/rules.d/77-mm-quectel-ec25-qmi.rules"
 NM_CONN_NAME="vertek-lte"
 LTE_APN="super"
+MODEM_POWER="/usr/local/sbin/vcm_modem_power.sh"
+# Left by the LTE watchdog when a soft reset has already failed: go straight to a power-cycle
+HARD_RESET_FLAG="/run/vertek/modem-reset-hard"
+HARD_RESET=0
+[[ -f "$HARD_RESET_FLAG" ]] && { HARD_RESET=1; rm -f "$HARD_RESET_FLAG"; }
+POWER_CYCLED=0
 
 # --- Unblock USB hub / modem in usbguard ---
 # VCM < v1.0.4 decal loop null-matches the hub (empty serial) against decals with an
@@ -31,7 +37,10 @@ unblock_modem_path() {
 # drop the modem ("marking modem as invalid" — Roundhouse UNSW, Oct 2026, where
 # only a Core reboot used to recover it). AT+CFUN=1,1 reboots the modem; if it
 # doesn't go down (no AT port, or the firmware ignores it), a USB port reset does
-# to it what a Core reboot does. ModemManager is then restarted to re-detect it.
+# to it what a Core reboot does. If its ports still don't come back, the modem's
+# power is cut (Sixfab Base HAT) — the soft resets don't clear a wedged modem
+# (Nov 2026 fleet). Mode "power" skips straight to the power-cycle. ModemManager
+# is then restarted to re-detect it.
 # Sets MODEM_IDX; returns 1 if the modem doesn't come back.
 modem_usb_path() {
     local d
@@ -64,39 +73,55 @@ usb_reset_modem() {
     echo 1 > "$dev/authorized" 2>/dev/null || true
     sleep 5
 }
+# Cut and restore the modem's power; once per run. Returns 1 when not possible
+# (no Base HAT) or the modem doesn't come back on USB.
+power_cycle_modem() {
+    [[ "$POWER_CYCLED" -eq 0 && -x "$MODEM_POWER" ]] || return 1
+    "$MODEM_POWER" supported || return 1
+    POWER_CYCLED=1
+    "$MODEM_POWER" cycle
+}
 reset_modem() {
-    local why="$1" port sent=0 dropped=0 dev i
+    local why="$1" mode="${2:-}" port sent=0 dropped=0 dev i
     LOG "Resetting modem: $why"
-    dev="$(modem_usb_path || true)"
-    if [[ -n "$dev" && "$(cat "$dev/authorized" 2>/dev/null)" == "0" ]]; then
-        LOG "Modem is deauthorized on USB — authorizing it"
-        echo 1 > "$dev/authorized" 2>/dev/null || true
-    fi
-    for port in ttyUSB2 ttyUSB3 ttyUSB1 ttyUSB0; do
-        [[ -e "/dev/$port" ]] || continue
-        timeout 10 setsid bash -c "
-            exec 3<>/dev/$port 2>/dev/null || exit 1
-            printf 'AT+CFUN=1,1\r' >&3
-            sleep 2
-        " 2>/dev/null \
-            && { sent=1; LOG "AT+CFUN=1,1 sent via /dev/$port — modem rebooting"; break; } || true
-    done
-    if [[ "$sent" -eq 1 ]]; then
-        for i in $(seq 1 20); do
-            [[ ! -e /dev/cdc-wdm0 ]] && { dropped=1; break; }
-            sleep 1
+    [[ "$HARD_RESET" -eq 1 ]] && mode=power
+    if [[ "$mode" == "power" ]] && power_cycle_modem; then
+        :
+    else
+        dev="$(modem_usb_path || true)"
+        if [[ -n "$dev" && "$(cat "$dev/authorized" 2>/dev/null)" == "0" ]]; then
+            LOG "Modem is deauthorized on USB — authorizing it"
+            echo 1 > "$dev/authorized" 2>/dev/null || true
+        fi
+        for port in ttyUSB2 ttyUSB3 ttyUSB1 ttyUSB0; do
+            [[ -e "/dev/$port" ]] || continue
+            timeout 10 setsid bash -c "
+                exec 3<>/dev/$port 2>/dev/null || exit 1
+                printf 'AT+CFUN=1,1\r' >&3
+                sleep 2
+            " 2>/dev/null \
+                && { sent=1; LOG "AT+CFUN=1,1 sent via /dev/$port — modem rebooting"; break; } || true
         done
+        if [[ "$sent" -eq 1 ]]; then
+            for i in $(seq 1 20); do
+                [[ ! -e /dev/cdc-wdm0 ]] && { dropped=1; break; }
+                sleep 1
+            done
+        fi
+        if [[ "$dropped" -eq 0 ]]; then
+            LOG "Modem didn't restart from an AT command"
+            usb_reset_modem
+        fi
+        LOG "Waiting for cdc-wdm0 (up to 90 s)..."
+        for i in $(seq 1 30); do
+            [[ -e /dev/cdc-wdm0 ]] && { LOG "cdc-wdm0 present"; break; }
+            sleep 3
+        done
+        if [[ ! -e /dev/cdc-wdm0 ]] && ! power_cycle_modem; then
+            LOG "cdc-wdm0 not found after reset"
+            return 1
+        fi
     fi
-    if [[ "$dropped" -eq 0 ]]; then
-        LOG "Modem didn't restart from an AT command"
-        usb_reset_modem
-    fi
-    LOG "Waiting for cdc-wdm0 (up to 3 min)..."
-    for i in $(seq 1 60); do
-        [[ -e /dev/cdc-wdm0 ]] && { LOG "cdc-wdm0 present"; break; }
-        [[ "$i" -eq 60 ]] && { LOG "cdc-wdm0 not found after reset"; return 1; }
-        sleep 3
-    done
     # Restart MM so it re-discovers the modem with clean state — without this,
     # MM may keep stale bearer state or its "invalid" verdict on the old modem
     LOG "Restarting ModemManager for clean modem re-discovery..."
@@ -123,6 +148,34 @@ modem_failed_resettable() {
         sim-*|esim-*) return 1 ;;
     esac
     return 0
+}
+
+# Modem state ModemManager reports, or empty if it has lost the modem
+modem_state() {
+    mmcli -m "${MODEM_IDX:-any}" --output-keyvalue 2>/dev/null \
+        | awk -F': ' '/modem.generic.state[[:space:]]/{print $NF}' | tr -d ' '
+}
+
+# Wait up to 60 s for LTE registration; sets $state
+wait_registration() {
+    local i
+    for i in $(seq 1 30); do
+        state="$(modem_state)"
+        [[ "$state" == "registered" || "$state" == "connected" ]] && return 0
+        sleep 2
+    done
+    return 1
+}
+
+# Stuck before it can look for a network: its control port has wedged (Benchmark,
+# Mildura, Criterion, Nov 2026 — only a power-cycle cleared them). "enabled",
+# "searching" or "registering" is the network's side and a reset doesn't help.
+modem_stuck() {
+    case "$1" in
+        enabling|initializing|disabling|disabled|"") return 0 ;;
+        failed) modem_failed_resettable "${MODEM_IDX:-any}" ;;
+        *) return 1 ;;
+    esac
 }
 
 if unblock_modem_path; then
@@ -245,12 +298,12 @@ if lsusb 2>/dev/null | grep -q "2c7c" && [[ ! -e /dev/cdc-wdm0 ]]; then
             [[ -e /dev/cdc-wdm0 ]] && break
             sleep 3
         done
-        if [[ ! -e /dev/cdc-wdm0 ]]; then
+        if [[ ! -e /dev/cdc-wdm0 ]] && ! power_cycle_modem; then
             systemctl start ModemManager 2>/dev/null || true
             LOG "cdc-wdm0 still missing after USB reset — wlan0 sufficient"
             exit 0
         fi
-        LOG "cdc-wdm0 present after USB reset"
+        LOG "cdc-wdm0 present after reset"
     else
         LOG "Waiting for /dev/cdc-wdm0 after modem reboot (up to 3 min)..."
         for i in $(seq 1 60); do
@@ -268,9 +321,17 @@ fi
 # --- Wait for QMI device node (up to 30s) ---
 for i in $(seq 1 30); do
     [[ -e /dev/cdc-wdm0 ]] && break
-    [[ "$i" -eq 30 ]] && { LOG "cdc-wdm0 not found after 30s — wwan0 unavailable, wlan0 sufficient"; exit 0; }
     sleep 1
 done
+if [[ ! -e /dev/cdc-wdm0 ]]; then
+    # No modem on USB at all, yet the Base HAT is fitted: it has crashed off the bus
+    if ! lsusb 2>/dev/null | grep -q "2c7c" && "$MODEM_POWER" supported 2>/dev/null; then
+        LOG "No modem on USB — power-cycling it"
+        power_cycle_modem || { LOG "Modem still not on USB after a power-cycle — wlan0 sufficient"; exit 0; }
+    else
+        LOG "cdc-wdm0 not found after 30s — wwan0 unavailable, wlan0 sufficient"; exit 0
+    fi
+fi
 
 # --- Wait for wwan0 interface (up to 30s) ---
 for i in $(seq 1 30); do
@@ -381,16 +442,24 @@ fi
 
 # --- Wait for LTE registration (up to 60s) ---
 LOG "Waiting for LTE registration..."
-for i in $(seq 1 30); do
-    state="$(mmcli -m "$MODEM_IDX" --output-keyvalue 2>/dev/null \
-        | grep 'modem.generic.state[[:space:]]' | awk -F': ' '{print $NF}' | tr -d ' ')"
-    if [[ "$state" == "registered" || "$state" == "connected" ]]; then
-        LOG "LTE registered (state: $state)"
-        break
+if ! wait_registration && [[ "$state" == "disabled" ]]; then
+    # Switched off and NetworkManager isn't enabling it (it pauses autoconnect after
+    # failed attempts): bringing the profile up enables it
+    LOG "Modem disabled — bringing '$NM_CONN_NAME' up to enable it"
+    timeout 90 nmcli connection up "$NM_CONN_NAME" >/dev/null 2>&1 || true
+    wait_registration || true
+fi
+if [[ "$state" != "registered" && "$state" != "connected" ]]; then
+    if ! modem_stuck "$state"; then
+        LOG "No LTE registration after 60s (state: $state) — '$NM_CONN_NAME' will connect when the modem registers; wlan0 sufficient, continuing"
+        exit 0
     fi
-    [[ "$i" -eq 30 ]] && { LOG "No LTE registration after 60s — '$NM_CONN_NAME' will connect when the modem registers; wlan0 sufficient, continuing"; exit 0; }
-    sleep 2
-done
+    reset_modem "modem stuck at '${state:-gone}' after 60s" power \
+        || { LOG "Modem still not usable after reset — wlan0 sufficient, continuing"; exit 0; }
+    LOG "Waiting for LTE registration..."
+    wait_registration || { LOG "No LTE registration after reset (state: ${state:-gone}) — '$NM_CONN_NAME' will connect when the modem registers; wlan0 sufficient, continuing"; exit 0; }
+fi
+LOG "LTE registered (state: $state)"
 
 # After profile creation NM fires autoconnect immediately. Wait for that attempt
 # to settle (leave "activating" state) before we check IP or call connection up —
@@ -423,13 +492,7 @@ else
         reset_modem "NM activation failed (stale data session)" \
             || { LOG "Modem still not usable after reset — wlan0 sufficient, continuing"; exit 0; }
 
-        for i in $(seq 1 30); do
-            state="$(mmcli -m "$MODEM_IDX" --output-keyvalue 2>/dev/null \
-                | grep 'modem.generic.state[[:space:]]' | awk -F': ' '{print $NF}' | tr -d ' ')"
-            [[ "$state" == "registered" || "$state" == "connected" ]] && break
-            [[ "$i" -eq 30 ]] && { LOG "No LTE registration after reset — wlan0 sufficient"; exit 0; }
-            sleep 2
-        done
+        wait_registration || { LOG "No LTE registration after reset — wlan0 sufficient"; exit 0; }
 
         LOG "Retrying NM activation after modem reset..."
         nmcli connection up "$NM_CONN_NAME" 2>/dev/null \

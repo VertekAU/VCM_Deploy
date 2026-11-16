@@ -23,12 +23,13 @@ INSTALL_LOG="/var/log/vcm-install.log"
 # reading its original file (bash reads scripts incrementally).
 install_files() {
     local f
-    for f in vcm_modem_migrate.sh vcm_modem_reconnect.sh vcm_deploy.sh vcm_lte_watchdog.sh vcm_pkg.sh; do
+    for f in vcm_modem_migrate.sh vcm_modem_reconnect.sh vcm_deploy.sh vcm_lte_watchdog.sh vcm_pkg.sh \
+             vcm_modem_power.sh; do
         install -m 0755 -o root -g root "$INSTALL_DIR/$f" "$SBIN/.$f.new"
         mv -f "$SBIN/.$f.new" "$SBIN/$f"
     done
     for f in vcm-modem-reconnect.service vcm-deploy.service vcm-failure-reboot.service \
-             vcm-lte-watchdog.service vcm-lte-watchdog.timer; do
+             vcm-lte-watchdog.service vcm-lte-watchdog.timer vcm-modem-poweroff.service; do
         install -m 0644 -o root -g root "$INSTALL_DIR/$f" "$SYSTEMD/$f"
     done
     # NetworkManager connectivity check — read at NetworkManager start, so it takes
@@ -38,7 +39,11 @@ install_files() {
         /etc/NetworkManager/conf.d/90-vertek-connectivity.conf
     systemctl daemon-reload
     # The watchdog timer starts with the next boot (a full install also starts it now)
-    systemctl enable vcm-modem-reconnect.service vcm-deploy.service vcm-lte-watchdog.timer
+    systemctl enable vcm-modem-reconnect.service vcm-deploy.service vcm-lte-watchdog.timer \
+        vcm-modem-poweroff.service
+    # Must be active for its stop step to cut the modem's power at the next reboot.
+    # Starting it does nothing else; never restart it (that would cut the power now).
+    systemctl start vcm-modem-poweroff.service || true
 }
 
 if [[ "$REFRESH" -eq 1 ]]; then

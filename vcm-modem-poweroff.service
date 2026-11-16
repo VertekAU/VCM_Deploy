@@ -1,0 +1,20 @@
+[Unit]
+Description=VCM modem power-off at shutdown — reboots start with a freshly powered modem
+# Stopped after ModemManager and NetworkManager (units stop in reverse start order),
+# so they release the modem first; local filesystems are still mounted
+DefaultDependencies=no
+After=local-fs.target
+Before=ModemManager.service NetworkManager.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/local/sbin/vcm_modem_power.sh off
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

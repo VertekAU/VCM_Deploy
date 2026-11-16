@@ -6,9 +6,12 @@
 # itself — e.g. a stale data session that needs a modem reset — nothing retries
 # until the next reboot. This re-runs the reconnect, with its modem-reset
 # recovery, when wwan0 has no address and the modem is registered, missing from
-# ModemManager, failed (not for a SIM reason) or switched off. A modem that is
-# just not registered is left alone — NetworkManager connects once it registers.
-# A working LTE connection is never touched.
+# ModemManager, failed (not for a SIM reason), switched off, stuck at "enabling"
+# for 10 minutes, or (Sixfab Base HAT) gone from USB. A modem that is just not
+# registered is left alone — NetworkManager connects once it registers.
+# A working LTE connection is never touched. When a reset has already failed, or the
+# modem is stuck or off USB, the reconnect power-cycles it (soft resets don't clear
+# a wedged modem — Nov 2026 fleet).
 set -uo pipefail
 
 LOG() { echo "[vcm-lte-watchdog $(date -Is)] $*"; }
@@ -18,6 +21,10 @@ STATE_DIR="/run/vertek"                         # tmpfs — resets on boot
 STATUS_FILE="$STATE_DIR/lte-watchdog.status"    # last status logged
 BACKOFF_FILE="$STATE_DIR/lte-watchdog.backoff"  # "<failed attempts> <epoch of last attempt>"
 BACKOFF_MAX_MIN=240
+STUCK_FILE="$STATE_DIR/lte-watchdog.stuck"       # "<modem state> <epoch first seen>"
+STUCK_MIN=10
+HARD_RESET_FLAG="$STATE_DIR/modem-reset-hard"    # read (and removed) by vcm_modem_reconnect.sh
+MODEM_POWER="/usr/local/sbin/vcm_modem_power.sh"
 CHAIN=(vcm-modem-reconnect.service vcm-deploy.service vcm-update.service)
 
 mkdir -p "$STATE_DIR"
@@ -37,8 +44,13 @@ wwan_ip() {
     return 0
 }
 
-# No Quectel modem on USB (Wi-Fi/Ethernet-only core) — nothing to watch
-lsusb 2>/dev/null | grep -q '2c7c:' || exit 0
+# No Quectel modem on USB: nothing to watch on a Wi-Fi/Ethernet-only core. With the
+# Sixfab Base HAT fitted the modem should be there — it has crashed off USB.
+on_usb=1
+if ! lsusb 2>/dev/null | grep -q '2c7c:'; then
+    "$MODEM_POWER" supported 2>/dev/null || exit 0
+    on_usb=0
+fi
 
 # Boot provisioning or a manual update is already handling the modem
 for u in "${CHAIN[@]}"; do
@@ -49,7 +61,7 @@ done
 ip="$(wwan_ip)"
 if [[ -n "$ip" ]]; then
     note up "LTE up — wwan0 $ip"
-    rm -f "$BACKOFF_FILE"
+    rm -f "$BACKOFF_FILE" "$STUCK_FILE"
     exit 0
 fi
 
@@ -61,6 +73,8 @@ modem_state="$(mmcli -m any --output-keyvalue 2>/dev/null \
     | grep 'modem.generic.state[[:space:]]' | awk -F': ' '{print $NF}' | tr -d ' ')" || true
 has_profile=1
 nmcli connection show "$NM_CONN_NAME" &>/dev/null || has_profile=0
+[[ "$modem_state" =~ ^(enabling|initializing|disabling)$ ]] || rm -f "$STUCK_FILE"
+hard=0   # go straight to a power-cycle
 
 # Recover when the modem is on the network but has no data connection, when
 # ModemManager has lost the modem, or when the LTE profile is missing. Anything
@@ -70,7 +84,23 @@ case "$modem_state" in
     registered|connected) reason="modem registered (state: $modem_state) but wwan0 has no address" ;;
     # The reconnect resets a modem ModemManager has dropped (e.g. its control port
     # hung: "marking modem as invalid"), which used to need a Core reboot
-    "")                   reason="ModemManager isn't reporting the modem" ;;
+    "")
+        if [[ "$on_usb" -eq 0 ]]; then
+            reason="modem not on USB"; hard=1
+        else
+            reason="ModemManager isn't reporting the modem"
+        fi ;;
+    # A modem that doesn't finish enabling has a wedged control port (Benchmark,
+    # Mildura, Criterion, Nov 2026 — they sat there for hours)
+    enabling|initializing|disabling)
+        since="$(awk -v s="$modem_state" '$1==s{print $2}' "$STUCK_FILE" 2>/dev/null)"
+        [[ -n "$since" ]] || { since="$(date +%s)"; echo "$modem_state $since" > "$STUCK_FILE"; }
+        mins=$(( ($(date +%s) - since) / 60 ))
+        if (( mins < STUCK_MIN )); then
+            note "stuck-$modem_state" "LTE down — modem $modem_state; power-cycling it if still $modem_state after $STUCK_MIN min"
+            exit 0
+        fi
+        reason="modem stuck at $modem_state for $mins min"; hard=1 ;;
     failed)
         failed_reason="$(mmcli -m any --output-keyvalue 2>/dev/null \
             | awk -F': ' '/modem.generic.state-failed-reason/{print $NF}' | tr -d ' ')"
@@ -104,8 +134,12 @@ if (( fails > 0 && $(date +%s) - last < wait_min * 60 )); then
     exit 0
 fi
 
-LOG "LTE down: $reason — recovering (attempt $((fails + 1)))"
+# A modem a reset didn't bring back gets its power cut on the next attempt
+[[ "$fails" -gt 0 && ( -z "$modem_state" || "$modem_state" == "failed" ) ]] && hard=1
+
+LOG "LTE down: $reason — recovering (attempt $((fails + 1))$([[ "$hard" -eq 1 ]] && echo ", power-cycle"))"
 echo "$((fails + 1)) $(date +%s)" > "$BACKOFF_FILE"
+[[ "$hard" -eq 1 ]] && touch "$HARD_RESET_FLAG"
 if [[ "$modem_state" == "disabled" && "$has_profile" -eq 1 ]]; then
     # Bringing the profile up enables the modem, registers and connects
     timeout 90 nmcli connection up "$NM_CONN_NAME" >/dev/null 2>&1 || true
