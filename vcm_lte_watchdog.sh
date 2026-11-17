@@ -13,7 +13,10 @@
 # that passes nothing for ~6 minutes gets a fresh connection (and a modem reset if
 # that fails). A working LTE connection is never touched. When a reset has already failed, or the
 # modem is stuck or off USB, the reconnect power-cycles it (soft resets don't clear
-# a wedged modem — Nov 2026 fleet).
+# a wedged modem — Nov 2026 fleet). A recovery only counts once LTE has stayed up for
+# 15 minutes: a modem that drops again sooner is power-cycled straight away, without the
+# backoff wait, instead of being soft-reset over and over (Criterion, 17 Nov 2026: 16
+# resets in an hour, each "restoring" LTE for ~4 minutes).
 set -uo pipefail
 
 LOG() { echo "[vcm-lte-watchdog $(date -Is)] $*"; }
@@ -21,7 +24,7 @@ LOG() { echo "[vcm-lte-watchdog $(date -Is)] $*"; }
 NM_CONN_NAME="vertek-lte"
 STATE_DIR="/run/vertek"                         # tmpfs — resets on boot
 STATUS_FILE="$STATE_DIR/lte-watchdog.status"    # last status logged
-BACKOFF_FILE="$STATE_DIR/lte-watchdog.backoff"  # "<failed attempts> <epoch of last attempt>"
+BACKOFF_FILE="$STATE_DIR/lte-watchdog.backoff"  # "<failed attempts> <epoch of last attempt> <1 if it was a power-cycle>"
 BACKOFF_MAX_MIN=240
 STUCK_FILE="$STATE_DIR/lte-watchdog.stuck"       # "<modem state> <epoch first seen>"
 STUCK_MIN=10
@@ -30,6 +33,8 @@ MODEM_POWER="/usr/local/sbin/vcm_modem_power.sh"
 DATA_FILE="$STATE_DIR/lte-watchdog.data"         # "<consecutive failed data checks> <epoch of last check>"
 DATA_CHECK_MIN=10
 DATA_FAILS=3
+FLAP_FILE="$STATE_DIR/lte-watchdog.restored"     # "<epoch LTE was restored>" until it has held FLAP_MIN
+FLAP_MIN=15
 CHAIN=(vcm-modem-reconnect.service vcm-deploy.service vcm-update.service)
 
 mkdir -p "$STATE_DIR"
@@ -96,7 +101,13 @@ if [[ -n "$ip" ]]; then
     lte_data; data=$?
     if (( data == 0 )); then
         note up "LTE up — wwan0 $ip"
-        rm -f "$BACKOFF_FILE" "$STUCK_FILE"
+        rm -f "$STUCK_FILE"
+        # The failed-attempt count is kept until a recovery has held FLAP_MIN minutes
+        restored=0
+        [[ -f "$FLAP_FILE" ]] && read -r restored < "$FLAP_FILE"
+        if (( $(date +%s) - ${restored:-0} >= FLAP_MIN * 60 )); then
+            rm -f "$BACKOFF_FILE" "$FLAP_FILE"
+        fi
         exit 0
     fi
     (( data == 2 )) && exit 0
@@ -170,20 +181,28 @@ esac
 # (e.g. plan exhausted) would otherwise reset the modem every 2 minutes
 # Wait after N failed attempts: 30, 60, 120, then 240 minutes
 backoff_min() { local n=$(( $1 > 5 ? 5 : $1 )) m; m=$(( 15 << n )); echo $(( m > BACKOFF_MAX_MIN ? BACKOFF_MAX_MIN : m )); }
-fails=0; last=0
-[[ -f "$BACKOFF_FILE" ]] && read -r fails last < "$BACKOFF_FILE"
+fails=0; last=0; last_hard=0
+[[ -f "$BACKOFF_FILE" ]] && read -r fails last last_hard < "$BACKOFF_FILE"
+fails="${fails:-0}"; last="${last:-0}"; last_hard="${last_hard:-0}"
+# LTE dropped again before the last recovery had held FLAP_MIN minutes: the reset
+# didn't clear the fault. Power-cycle it — at once if that hasn't been tried yet.
+flap=0
+[[ -f "$FLAP_FILE" ]] && flap=1
 wait_min="$(backoff_min "$fails")"
-if (( fails > 0 && $(date +%s) - last < wait_min * 60 )); then
+if (( fails > 0 && $(date +%s) - last < wait_min * 60 )) && ! (( flap && last_hard == 0 )); then
     exit 0
+fi
+if (( flap )); then
+    reason="$reason; dropped again within $FLAP_MIN min of the last recovery"
+    hard=1
 fi
 
 # A modem a reset didn't bring back gets its power cut on the next attempt
 [[ "$fails" -gt 0 && ( -z "$modem_state" || "$modem_state" == "failed" ) ]] && hard=1
 
 LOG "LTE down: $reason — recovering (attempt $((fails + 1))$([[ "$hard" -eq 1 ]] && echo ", power-cycle"))"
-echo "$((fails + 1)) $(date +%s)" > "$BACKOFF_FILE"
-[[ "$hard" -eq 1 ]] && touch "$HARD_RESET_FLAG"
-if [[ "$modem_state" == "disabled" && "$has_profile" -eq 1 ]]; then
+echo "$((fails + 1)) $(date +%s) $hard" > "$BACKOFF_FILE"
+if [[ "$modem_state" == "disabled" && "$has_profile" -eq 1 && "$flap" -eq 0 ]]; then
     # Bringing the profile up enables the modem, registers and connects
     timeout 90 nmcli connection up "$NM_CONN_NAME" >/dev/null 2>&1 || true
     sleep 5
@@ -191,13 +210,15 @@ else
     # A dead session keeps its address, and the reconnect leaves an addressed wwan0
     # alone: take the connection down so it activates a fresh one (or resets the modem)
     [[ "$no_data" -eq 1 ]] && { nmcli connection down "$NM_CONN_NAME" >/dev/null 2>&1 || true; sleep 3; }
+    [[ "$hard" -eq 1 ]] && touch "$HARD_RESET_FLAG"
     systemctl restart vcm-modem-reconnect.service || true
 fi
 
 ip="$(wwan_ip)"
 if [[ -n "$ip" && ( "$no_data" -eq 0 || "$(lte_data_ok && echo ok)" == "ok" ) ]]; then
     LOG "LTE restored — wwan0 $ip"
-    rm -f "$BACKOFF_FILE" "$DATA_FILE"
+    rm -f "$DATA_FILE"
+    date +%s > "$FLAP_FILE"
     echo up > "$STATUS_FILE"
 else
     LOG "LTE still down after reconnect (see: journalctl -u vcm-modem-reconnect) — next attempt in $(backoff_min $((fails + 1))) min"

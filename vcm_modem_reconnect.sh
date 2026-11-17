@@ -391,6 +391,14 @@ udevadm trigger --subsystem-match=tty
 udevadm trigger --subsystem-match=usbmisc
 udevadm trigger --subsystem-match=net
 
+# The watchdog asked for a power-cycle (soft resets already failed, or LTE dropped again
+# minutes after one): do it now — a flapping modem can look healthy for a few minutes,
+# and the checks below would then leave it alone
+if [[ "$HARD_RESET" -eq 1 && "$POWER_CYCLED" -eq 0 ]]; then
+    reset_modem "the LTE watchdog asked for a power-cycle" power \
+        || { LOG "Modem still not usable after reset — wlan0 sufficient, continuing"; exit 0; }
+fi
+
 # --- Wait for MM to detect the modem (up to 60s) ---
 MODEM_IDX=""
 for i in $(seq 1 30); do
