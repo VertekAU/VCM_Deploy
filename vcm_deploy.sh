@@ -311,7 +311,9 @@ repair_object_store() {
     [[ "$n" -gt 0 ]] || return 0
     LOG "$name: $n empty git object file(s), left by an interrupted update — repairing"
     find "$dir/.git/objects" -type f -empty -delete 2>/dev/null || true
-    if out="$(GIT_SSH_COMMAND="$GIT_SSH" sudo -u "$PI_USER" git -C "$dir" fetch --refetch -q origin 2>&1)"; then
+    # Verify rather than trust the fetch: on the bench one object of a side branch was
+    # still missing after a refetch at boot (a second refetch restored it)
+    if out="$(GIT_SSH_COMMAND="$GIT_SSH" sudo -u "$PI_USER" git -C "$dir" fetch --refetch -q origin 2>&1)"             && sudo -u "$PI_USER" git -C "$dir" fsck --connectivity-only --no-dangling --no-reflogs >/dev/null 2>&1; then
         LOG "$name: repaired (all objects downloaded again)"
         return 0
     fi
