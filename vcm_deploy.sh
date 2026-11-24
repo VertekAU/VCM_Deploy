@@ -297,11 +297,70 @@ repair_scratch_refs() {
     done
 }
 
+# A power cut while git is writing can leave empty object files behind, and every
+# later pull then fails ("object file .git/objects/… is empty"). Third Wave BBQ
+# Applecross, 19 Nov 2026: 71 empty objects in the VCM repo and no updates for days.
+# A plain fetch doesn't help (git believes it still has some of those objects), so
+# delete the empty files and download every object again (fetch --refetch, git 2.36+),
+# or else add the pack of a fresh bare clone. The working tree is untouched.
+# VCM_Update's vcm_update.sh does the same for VCM and VCM_Deploy.
+repair_object_store() {
+    local dir="$1" name="$2" n url tmp out
+    [[ -d "$dir/.git/objects" ]] || return 0
+    n="$(find "$dir/.git/objects" -type f -empty 2>/dev/null | wc -l)" || n=0
+    [[ "$n" -gt 0 ]] || return 0
+    LOG "$name: $n empty git object file(s), left by an interrupted update — repairing"
+    find "$dir/.git/objects" -type f -empty -delete 2>/dev/null || true
+    if out="$(GIT_SSH_COMMAND="$GIT_SSH" sudo -u "$PI_USER" git -C "$dir" fetch --refetch -q origin 2>&1)"; then
+        LOG "$name: repaired (all objects downloaded again)"
+        return 0
+    fi
+    url="$(sudo -u "$PI_USER" git -C "$dir" remote get-url origin 2>/dev/null || true)"
+    tmp="$dir.repair"
+    rm -rf "${tmp:?}"
+    if [[ -n "$url" ]] && GIT_SSH_COMMAND="$GIT_SSH" sudo -u "$PI_USER"             git clone -q --bare "$url" "$tmp" >/dev/null 2>&1; then
+        sudo -u "$PI_USER" cp -n "$tmp"/objects/pack/pack-* "$dir/.git/objects/pack/"             && LOG "$name: repaired (objects restored from a fresh clone)"             || LOG "$name: WARNING: could not copy the fresh clone's objects"
+    else
+        LOG "$name: repair failed — will retry next boot: $(grep -m1 -E '^(fatal|error)' <<<"$out" || tail -1 <<<"$out")"
+    fi
+    rm -rf "${tmp:?}"
+}
+
+# Prevention: by default git doesn't flush new object files to disk, so a power cut
+# soon after a pull can leave them empty. core.fsync=added (git 2.36+) flushes
+# objects, refs and the index; older git ignores the setting. Set once per repo.
+ensure_git_fsync() {
+    local dir="$1" name="$2"
+    [[ -d "$dir/.git" ]] || return 0
+    [[ "$(sudo -u "$PI_USER" git -C "$dir" config --get core.fsync 2>/dev/null)" == "added" ]] && return 0
+    sudo -u "$PI_USER" git -C "$dir" config core.fsync added 2>/dev/null         && LOG "$name: git now flushes its writes to disk (core.fsync=added)" || true
+}
+
+# A Core can reach this before its network is usable: Andy's demo Core, 24 Nov 2026,
+# still had no DNS 3 minutes after NetworkManager started, so every pull failed and
+# it stayed on old code for another day. Wait up to 2 minutes for GitHub to resolve
+# (normally the first check passes and nothing is logged). Kept short: this service
+# has a 10-minute start limit, and vcm_update.sh waits again (up to 5 minutes).
+wait_for_github() {
+    local i
+    for i in $(seq 1 12); do
+        if getent hosts ssh.github.com >/dev/null 2>&1 && getent hosts github.com >/dev/null 2>&1; then
+            [[ "$i" -gt 1 ]] && LOG "GitHub resolves now (waited ~$(( (i - 1) * 10 )) s)"
+            return 0
+        fi
+        [[ "$i" -eq 1 ]] && LOG "GitHub doesn't resolve yet (no DNS) — waiting up to 2 minutes before pulling VCM_Update"
+        sleep 10
+    done
+    LOG "GitHub still doesn't resolve after 2 minutes — trying anyway"
+}
+
 # Pull as pi with a few retries (site internet can drop for seconds at a time);
 # on failure, log git's own error rather than hiding it
 git_pull() {
     local dir="$1" name="$2" out="" attempt
     repair_scratch_refs "$dir"
+    repair_object_store "$dir" "$name"
+    ensure_git_fsync "$dir" "$name"
     for attempt in 1 2 3; do
         out="$(GIT_SSH_COMMAND="$GIT_SSH" sudo -u "$PI_USER" git -C "$dir" pull --ff-only -q 2>&1)" && return 0
         [[ "$attempt" -lt 3 ]] && sleep 10
@@ -314,6 +373,7 @@ git_pull() {
 
 # --- VCM_Update: clone or pull, (re)install its unit ---
 setup_vcm_update() {
+    wait_for_github
     # If VCM_Update has a partial .git (mid-clone power loss), remove so we re-clone cleanly
     if [[ -d "$VCM_UPDATE_DIR/.git" ]]; then
         sudo -u "$PI_USER" git -C "$VCM_UPDATE_DIR" rev-parse --git-dir &>/dev/null \

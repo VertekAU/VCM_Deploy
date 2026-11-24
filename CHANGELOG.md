@@ -1,3 +1,8 @@
+v1.1.10 (unreleased)
+- vcm_deploy.sh: repairs the VCM_Update repo before pulling it when a power cut has left empty object files in .git/objects (every later pull fails with "object file … is empty"; Third Wave BBQ Applecross, 19 Nov 2026, in its VCM repo). The empty files are deleted and every object is downloaded again (git fetch --refetch, git 2.36+), or a fresh bare clone's pack is added. The working tree isn't touched. VCM_Update v1.1.9 does the same for VCM and VCM_Deploy
+- vcm_deploy.sh: sets core.fsync=added on the repos it pulls, so git flushes new objects, refs and the index to disk and a power cut can't leave them empty (git 2.36+; older git ignores it)
+- vcm_deploy.sh: waits up to 2 minutes for GitHub to resolve before pulling VCM_Update. Andy's demo Core (24 Nov 2026) had no DNS 3 minutes after NetworkManager started and missed the night's updates. Kept short because vcm-deploy.service has a 10-minute start limit; vcm_update.sh waits again, up to 5 minutes
+
 v1.1.9
 2026-11-23
 - Modem power-cycle (Sixfab 3G/4G & LTE Base HAT). Nov 2026 fleet (Criterion, Benchmark, Strathfield, Mildura, Roundhouse UNSW): the EG25-G's control port wedged — QMI timeouts from the first minute of a boot, stuck at "enabling", or ports that never came back — and v1.1.8's AT+CFUN / USB reset / re-authorize couldn't clear it; a Pi reboot keeps the modem powered, so the wedge carried into the next boot and LTE-only sites stayed offline until someone power-cycled them. The HAT's GPIO26 (HAT_PWR_OFF) cuts the modem's power while the Pi keeps running. New vcm_modem_power.sh (supported / cycle / off; only acts when the HAT's EEPROM says Sixfab Base HAT). Bench: modem off USB within 1 s, back 16 s after power returns, LTE connected at 30 s without help
