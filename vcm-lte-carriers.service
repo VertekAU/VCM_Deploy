@@ -1,0 +1,17 @@
+[Unit]
+Description=VCM LTE carrier ranking — night survey and move-back (vcm_lte_carriers)
+After=vcm-update.service vcm-modem-reconnect.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vcm_lte_carriers nightly
+# A survey is capped at 15 minutes; stop it well before the watchdog's 30-minute
+# limit on the survey marker. SIGTERM unwinds: the marker goes and LTE reconnects.
+TimeoutStartSec=1500
+TimeoutStopSec=180
+StandardOutput=journal
+StandardError=journal
+# Runs every 30 minutes and usually does nothing: keep systemd's start/finish lines
+# out of the journal but record the tool's own messages
+SyslogLevel=notice
+LogLevelMax=notice

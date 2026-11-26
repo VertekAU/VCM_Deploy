@@ -36,6 +36,11 @@ DATA_FAILS=3
 FLAP_FILE="$STATE_DIR/lte-watchdog.restored"     # "<epoch LTE was restored>" until it has held FLAP_MIN
 FLAP_MIN=15
 CHAIN=(vcm-modem-reconnect.service vcm-deploy.service vcm-update.service)
+CARRIERS="/usr/local/sbin/vcm_lte_carriers"     # carrier ranking and fail-over (VCM_Deploy v1.1.11)
+SURVEY_MARKER="$STATE_DIR/lte-survey.active"     # a carrier survey is taking LTE down on purpose
+SURVEY_MAX_MIN=30                                # vcm-lte-carriers.service is stopped at 25
+NOTREG_FILE="$STATE_DIR/lte-watchdog.notreg"     # "<epoch the modem was first seen unregistered>"
+NOTREG_MIN=4
 
 mkdir -p "$STATE_DIR"
 
@@ -95,13 +100,39 @@ for u in "${CHAIN[@]}"; do
     [[ -n "$(systemctl list-jobs --no-legend "$u" 2>/dev/null)" ]] && exit 0
 done
 
+# A carrier survey or move-back takes LTE down for a few minutes — leave it alone. A
+# marker that outlived the survey's own time limit means it died: hand carrier choice
+# back to the modem and carry on with the usual checks.
+if [[ -f "$SURVEY_MARKER" ]]; then
+    age=$(( ($(date +%s) - $(stat -c %Y "$SURVEY_MARKER" 2>/dev/null || echo 0)) / 60 ))
+    (( age < SURVEY_MAX_MIN )) && exit 0
+    LOG "Carrier survey didn't finish ($age min) — handing carrier choice back to the modem"
+    rm -f "$SURVEY_MARKER"
+    [[ -x "$CARRIERS" ]] && timeout 300 "$CARRIERS" abort
+fi
+
+# Move LTE to the next carrier in this site's ranking (vcm_lte_carriers). 0 when LTE is
+# back; otherwise the usual recovery carries on. Does nothing with mode=off.
+try_failover() {
+    [[ -x "$CARRIERS" ]] || return 1
+    timeout 900 "$CARRIERS" failover --reason "$1" || return 1
+    LOG "LTE restored on another carrier — wwan0 $(wwan_ip)"
+    rm -f "$DATA_FILE" "$NOTREG_FILE"
+    echo up > "$STATUS_FILE"
+    return 0
+}
+
 ip="$(wwan_ip)"
 no_data=0
 if [[ -n "$ip" ]]; then
     lte_data; data=$?
     if (( data == 0 )); then
         note up "LTE up — wwan0 $ip"
-        rm -f "$STUCK_FILE"
+        rm -f "$STUCK_FILE" "$NOTREG_FILE"
+        # Carrier, signal and cell for VCM's check-in; at most every 9 minutes
+        if [[ -x "$CARRIERS" && -z "$(find "$STATE_DIR/lte-status.json" -mmin -9 2>/dev/null)" ]]; then
+            timeout 60 "$CARRIERS" report --ok >/dev/null 2>&1
+        fi
         # The failed-attempt count is kept until a recovery has held FLAP_MIN minutes
         restored=0
         [[ -f "$FLAP_FILE" ]] && read -r restored < "$FLAP_FILE"
@@ -123,6 +154,7 @@ modem_state="$(mmcli -m any --output-keyvalue 2>/dev/null \
 has_profile=1
 nmcli connection show "$NM_CONN_NAME" &>/dev/null || has_profile=0
 [[ "$modem_state" =~ ^(enabling|initializing|disabling)$ ]] || rm -f "$STUCK_FILE"
+[[ "$modem_state" =~ ^(registered|connecting|connected)$ ]] && rm -f "$NOTREG_FILE"
 hard=0   # go straight to a power-cycle
 
 # Recover when the modem is on the network but has no data connection, when
@@ -170,6 +202,14 @@ case "$modem_state" in
     disabled)             reason="modem is switched off (disabled)" ;;
     *)
         if [[ "$has_profile" -eq 1 ]]; then
+            # Not registered for NOTREG_MIN minutes: the carrier has gone, or the modem has
+            # settled on one that refuses the SIM (Criterion, Nov 2026: Vodafone, for days)
+            since="$(cat "$NOTREG_FILE" 2>/dev/null)"
+            [[ -n "$since" ]] || { since="$(date +%s)"; echo "$since" > "$NOTREG_FILE"; }
+            mins=$(( ($(date +%s) - since) / 60 ))
+            if (( mins >= NOTREG_MIN )) && try_failover "not registered for $mins min"; then
+                exit 0
+            fi
             note waiting "LTE down — modem not registered (state: $modem_state); '$NM_CONN_NAME' connects once it registers"
             exit 0
         fi
@@ -188,6 +228,11 @@ fails="${fails:-0}"; last="${last:-0}"; last_hard="${last_hard:-0}"
 # didn't clear the fault. Power-cycle it — at once if that hasn't been tried yet.
 flap=0
 [[ -f "$FLAP_FILE" ]] && flap=1
+# On a carrier but a fresh connection didn't help: the carrier may be the problem —
+# try the next one in the ranking before resetting the modem again
+if [[ "$modem_state" =~ ^(registered|connected)$ && "$fails" -gt 0 && "$flap" -eq 0 ]]; then
+    try_failover "$reason" && exit 0
+fi
 wait_min="$(backoff_min "$fails")"
 if (( fails > 0 && $(date +%s) - last < wait_min * 60 )) && ! (( flap && last_hard == 0 )); then
     exit 0

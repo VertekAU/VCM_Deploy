@@ -1,0 +1,9 @@
+[Unit]
+Description=VCM LTE carrier ranking — check every 30 minutes (acts only after maintenance, or in trial mode)
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=30min
+
+[Install]
+WantedBy=timers.target
