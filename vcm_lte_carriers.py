@@ -274,7 +274,9 @@ def move(st, plmn):
     rc, out = run(["mmcli", "-m", "any", f"--3gpp-register-in-operator={plmn}",
                    f"--timeout={REGISTER_TIMEOUT}"], REGISTER_TIMEOUT + 20)
     on = wait_for(lambda: (lambda m: registered(m) and m["operator"] == plmn)(modem()),
-                  20 if rc == 0 else 3)
+                  # mmcli reports success at once while the modem is still on the old
+                  # carrier; the switch itself takes 15-25 s (bench, 26 Nov 2026)
+                  60 if rc == 0 else 3)
     why = "" if on else (last_line(out) if rc != 0 else "registration didn't hold")
     release()
     up = nm_up()

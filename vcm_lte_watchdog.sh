@@ -229,8 +229,10 @@ fails="${fails:-0}"; last="${last:-0}"; last_hard="${last_hard:-0}"
 flap=0
 [[ -f "$FLAP_FILE" ]] && flap=1
 # On a carrier but a fresh connection didn't help: the carrier may be the problem —
-# try the next one in the ranking before resetting the modem again
-if [[ "$modem_state" =~ ^(registered|connected)$ && "$fails" -gt 0 && "$flap" -eq 0 ]]; then
+# try the next one in the ranking (the carrier tool allows one try per 10 minutes).
+# A flapping modem gets its power-cycle first; once that has been tried, the carrier
+# is tried during the backoff wait instead of waiting it out (bench, 26 Nov 2026)
+if [[ "$modem_state" =~ ^(registered|connected)$ && "$fails" -gt 0 ]] && ! (( flap && last_hard == 0 )); then
     try_failover "$reason" && exit 0
 fi
 wait_min="$(backoff_min "$fails")"
