@@ -1,3 +1,6 @@
+v1.1.12 (unreleased)
+- vcm_lte_carriers: a carrier that accepts the registration but then hands the modem on to another one is no longer credited with the other carrier's numbers. First trial Core (Rink46, 27 Nov 2026): Vodafone accepted the Super SIM for a few seconds; once selection went back to automatic the modem was on Optus, and Optus's measurement (same cell ID, PLMN 50502) was filed as Vodafone's, putting Vodafone top of the ranking at 13.3. A move now succeeds only if the modem is still on the carrier after reconnecting, and a survey measurement only counts if the serving cell belongs to that carrier; otherwise the carrier rests as refused ("didn't stay on it")
+
 v1.1.11
 2026-11-27
 - New vcm_lte_carriers (installed as /usr/local/sbin/vcm_lte_carriers) with vcm-lte-carriers.timer: a per-site ranked list of the LTE carriers that work, and fail-over down it. The Super SIM can use every Australian carrier and the modem picks one itself; left alone it can settle on one that refuses the SIM (Criterion, Nov 2026: Vodafone, reject cause 15, LTE down for days while Telstra worked). Off by default: /etc/vertek/lte-carriers.conf mode=off | trial | on

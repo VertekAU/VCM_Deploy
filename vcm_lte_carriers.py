@@ -284,6 +284,12 @@ def move(st, plmn):
         return False, why or "not registered"
     if not up:
         return False, "registered but no LTE address"
+    # Released to automatic, a carrier that accepted the registration but won't give
+    # service hands the modem on to another one (Rink46, 27 Nov 2026: Vodafone accepted,
+    # then the modem was on Optus and Optus's numbers were filed as Vodafone's).
+    now_on = modem()["operator"]
+    if now_on != plmn:
+        return False, f"didn't stay on it (moved to {KNOWN.get(now_on, now_on or 'nothing')})"
     return True, ""
 
 
@@ -477,7 +483,17 @@ def survey(st, why):
                     c["rested_until"] = now + REST
                 log(f"{c['name']}: {c['note']}")
                 continue
-            results[p] = measure()
+            m = measure()
+            seen_on = m["cell"].get("plmn")
+            if seen_on and seen_on != p:
+                # Moved off during the measurement: these numbers are another carrier's
+                c["score"] = None
+                c["last"] = {"at": int(time.time()), "data_ok": False, "error": "moved off"}
+                c["note"] = f"refused: didn't stay on it (moved to {KNOWN.get(seen_on, seen_on)})"
+                c["rested_until"] = now + REST
+                log(f"{c['name']}: {c['note']}")
+                continue
+            results[p] = m
         for p, m in results.items():
             record(st, p, m, now)
             m2 = st["carriers"][p]
