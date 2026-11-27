@@ -494,6 +494,13 @@ def survey(st, why):
                 log(f"{c['name']}: {c['note']}")
                 continue
             results[p] = m
+        if nets is not None:
+            # A carrier the scan no longer sees keeps no old score (bench 27 Nov 2026:
+            # 505 11, seen once, stayed in the ranking with a score that was Telstra's)
+            for p, c in st["carriers"].items():
+                if p not in cands and c["score"] is not None:
+                    c["score"] = None
+                    c["note"] = "not seen in the last survey"
         for p, m in results.items():
             record(st, p, m, now)
             m2 = st["carriers"][p]
