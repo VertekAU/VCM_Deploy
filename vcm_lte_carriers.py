@@ -87,6 +87,17 @@ def last_line(out):
     return lines[-1][:160] if lines else ""
 
 
+# Errors that mean the modem itself isn't answering, not that a carrier said no. Carina
+# CORE02, 27 Nov 2026: with cdc-wdm0 hanging, every move timed out and the survey rested
+# Telstra and Optus for a week as "refused".
+MODEM_FAULTS = ("Timeout was reached", "QMI port", "timed out", "couldn't find modem",
+                "not answering")
+
+
+def modem_fault(why):
+    return any(s in (why or "") for s in MODEM_FAULTS)
+
+
 # ---------------------------------------------------------------- config and state
 
 def mode():
@@ -278,8 +289,10 @@ def move(st, plmn):
                   # carrier; the switch itself takes 15-25 s (bench, 26 Nov 2026)
                   60 if rc == 0 else 3)
     why = "" if on else (last_line(out) if rc != 0 else "registration didn't hold")
-    release()
+    released = release()
     up = nm_up()
+    if not released:
+        return False, "modem not answering (couldn't hand carrier choice back)" + (f"; {why}" if why else "")
     if not on:
         return False, why or "not registered"
     if not up:
@@ -304,6 +317,8 @@ def ensure_4g_only():
     rc, out = run(["mmcli", "-m", "any", "--set-allowed-modes=4g"], 30)
     if rc == 0:
         log(f"Modem set to 4G only (was: {m['modes'] or 'unknown'})")
+        # The modem re-registers; a network scan straight after fails 'DeviceInUse'
+        time.sleep(20)
     else:
         log(f"WARNING: couldn't set the modem to 4G only: {last_line(out)}")
     if not wait_for(lambda: wwan_ip() is not None, 30):
@@ -425,7 +440,14 @@ def settle(st, now):
         if ok and data_check()["ok"]:
             return p
         log(f"{name(st, p)}: {why or 'no data'}")
+        if modem_fault(why):
+            break       # not the carrier's fault; stop asking a modem that isn't answering
         car(st, p)["cooldown_until"] = now + COOLDOWN
+    return stand_down()
+
+
+def stand_down():
+    """Leave carrier choice to the modem and make sure LTE is asked to connect."""
     release()
     if not wwan_ip():
         nm_up()
@@ -462,6 +484,7 @@ def survey(st, why):
         if orig and orig in cands and wwan_ip():
             results[orig] = measure()        # no move needed for the carrier we're on
         deadline = now + SURVEY_BUDGET - 180
+        stopped = False
         for p in cands:
             if p in results:
                 continue
@@ -473,6 +496,13 @@ def survey(st, why):
                 log(f"Out of time — {c['name']} not tried")
                 continue
             ok, why_not = move(st, p)
+            if not ok and modem_fault(why_not):
+                # Says nothing about the carrier: keep its score, rest nothing, and stop
+                # rather than queue more requests on a modem that isn't answering
+                c["last"] = {"at": int(time.time()), "data_ok": False, "error": why_not}
+                log(f"{c['name']}: no answer from the modem ({why_not}) — survey stopped")
+                stopped = True
+                break
             if not ok:
                 c["score"] = None
                 c["last"] = {"at": int(time.time()), "data_ok": False, "error": why_not}
@@ -507,9 +537,11 @@ def survey(st, why):
             log(f"{m2['name']}: score {m2['score']} (SNR {m.get('snr')} dB, RSRP {m.get('rsrp')} dBm, "
                 f"{m.get('rtt_ms')} ms, {m.get('loss_pct')}% loss, band {m['cell'].get('band', '?')})")
         rank(st, now)
+        # Set even when stopped, so a sick modem isn't surveyed again every half hour
         st["last_survey"] = now
-        st["surveys"] = (st["surveys"] + [{"at": now, "why": why, "results": results}])[-10:]
-        final = settle(st, now)
+        st["surveys"] = (st["surveys"] + [{"at": now, "why": why, "results": results,
+                                           "stopped": stopped}])[-10:]
+        final = stand_down() if stopped else settle(st, now)
         st["current"] = final
         save(st)
         log(f"Ranking: {ranking_text(st, now)} — now on {name(st, final)}")
@@ -536,6 +568,12 @@ def back_to_top(st):
         here = measure()
         record(st, cur, here, now)
         ok, why = move(st, top)
+        if not ok and modem_fault(why):
+            log(f"{name(st, top)}: no answer from the modem ({why}) — the modem chooses")
+            stand_down()
+            st["current"] = modem()["operator"]
+            save(st)
+            return
         there = measure() if ok else {"at": now, "data_ok": False, "error": why}
         record(st, top, there, now)
         s_top, s_cur = score(there), score(here)
@@ -673,6 +711,11 @@ def cmd_failover(st, reason):
             save(st)
             log(f"LTE restored on {name(st, p)}")
             return 0
+        if modem_fault(why):
+            # The watchdog's own recovery (reconnect, power-cycle) is what helps here
+            log(f"{name(st, p)}: no answer from the modem ({why}) — the modem chooses")
+            stand_down()
+            break
         car(st, p)["cooldown_until"] = int(time.time()) + COOLDOWN
         log(f"{name(st, p)}: {why or 'no data'} — sits out until {hhmm(int(time.time()) + COOLDOWN)}")
     save(st)
@@ -720,8 +763,11 @@ def cmd_status(st):
     now = int(time.time())
     m = modem()
     s = signal() if m["present"] else {}
-    print(f"mode {mode()}; modem {m['state']} on {name(st, m['operator']) if m['operator'] else '-'}"
-          f" ({m['modes'] or '?'}); RSRP {s.get('rsrp')} dBm, SNR {s.get('snr')} dB")
+    if m["present"]:
+        print(f"mode {mode()}; modem {m['state']} on {name(st, m['operator']) if m['operator'] else '-'}"
+              f" ({m['modes'] or '?'}); RSRP {s.get('rsrp')} dBm, SNR {s.get('snr')} dB")
+    else:
+        print(f"mode {mode()}; ModemManager isn't reporting a modem")
     print(f"ranking: {ranking_text(st, now)}")
     for p, c in sorted(st["carriers"].items()):
         cd = f", sits out until {hhmm(c['cooldown_until'])}" if c["cooldown_until"] > now else ""
